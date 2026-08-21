@@ -33,7 +33,7 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const SERVER_VER = 11;
+const SERVER_VER = 12;
 const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE) || 16;
 const SPEAKER_TIMEOUT_MS = Number(process.env.SPEAKER_TIMEOUT_MS) || 5000;
 // Trip memory: a channel survives everyone dropping (chai stop, dead zone),
@@ -49,6 +49,63 @@ const SWEEP_MS = Number(process.env.SWEEP_MS) || 1000;
 // out an id a phone already cached for a different photo or clip.
 const SEQ_BASE =
   process.env.SEQ_BASE != null ? Number(process.env.SEQ_BASE) : Date.now() % 0x40000000;
+
+// ------------------------------------------------------------------ web push
+// A locked phone can't play the channel's audio (platform rule), but it can
+// buzz: we push "X is talking / pinged / shared a photo" notifications to
+// members whose app is backgrounded, away, or closed. Set VAPID_* env vars
+// on the host to rotate the identity keys without a code change.
+const VAPID_PUBLIC =
+  process.env.VAPID_PUBLIC ||
+  'BK65JrInBFcQRYA3LDnJCIF1WoF48NtI0dPQY43RlN7FS4difAatGIPSpbfVgofmJrWdHBa5CDO4bsxJwi_Nldk';
+const VAPID_PRIVATE =
+  process.env.VAPID_PRIVATE || '4MEzPUuCPOw5Z8otqxFK_trjkMOTNz-GggJB5B_1Tf0';
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'https://github.com/imojbaba/talkie2';
+const PUSH_DRYRUN = process.env.PUSH_DRYRUN === '1';
+let webpush = null;
+if (!PUSH_DRYRUN) {
+  try {
+    webpush = require('web-push');
+    webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
+  } catch {
+    webpush = null; // push quietly disabled; everything else still works
+  }
+}
+const pushLog = []; // dry-run capture, asserted by the protocol tests
+
+function queuePush(room, id, sub, payload) {
+  if (!webpush) {
+    if (PUSH_DRYRUN) pushLog.push({ room: room.code, id, payload });
+    return;
+  }
+  webpush
+    .sendNotification(sub, JSON.stringify(payload), { TTL: 600, urgency: 'high' })
+    .catch((err) => {
+      const sc = err && err.statusCode;
+      if (sc === 404 || sc === 410) room.pushSubs.delete(id); // endpoint is dead
+    });
+}
+
+// Notify every subscribed member who is NOT looking at the app right now
+// (backgrounded, away, or offline) — at most once per kind per window.
+function pushRoom(room, kind, minMs, title, body, exceptId) {
+  const now = Date.now();
+  for (const [id, sub] of room.pushSubs) {
+    if (id === exceptId) continue;
+    let live = null;
+    for (const c of room.clients) {
+      if (c.id === id) {
+        live = c;
+        break;
+      }
+    }
+    if (live && !live.bg) continue; // foreground: they already see/hear it
+    const k = id + ':' + kind;
+    if (now - (room.pushAt.get(k) || 0) < minMs) continue;
+    room.pushAt.set(k, now);
+    queuePush(room, id, sub, { title, body, tag: 'talkie-' + kind, room: room.code });
+  }
+}
 const MAX_BINARY_BYTES = 8 * 1024;
 const MAX_TEXT_BYTES = 2 * 1024;
 // Raw 16 kHz / 16-bit mono is ~32 KB/s; the burst allowance lets a client
@@ -223,6 +280,8 @@ function onControl(ws, msg) {
           poll: null,
           photos: [],
           photoSeq: SEQ_BASE,
+          pushSubs: new Map(),
+          pushAt: new Map(),
         };
         rooms.set(code, room);
       }
@@ -290,6 +349,7 @@ function onControl(ws, msg) {
       room.lastAudio = Date.now();
       send(ws, { t: 'granted', tx });
       broadcast(room, { t: 'ptt-start', id: ws.id, name: ws.name, tx }, ws);
+      pushRoom(room, 'talk', 180000, `🎙 ${ws.name} is talking on #${room.code}`, 'Open Talkie to listen', ws.id);
       break;
     }
     case 'ptt-end': {
@@ -300,7 +360,35 @@ function onControl(ws, msg) {
     case 'leave': {
       // Explicit exit (the Leave button): a real goodbye, not an "away" ghost.
       ws.explicitLeave = true;
+      if (ws.room) ws.room.pushSubs.delete(ws.id); // left the trip: stop buzzing them
       leaveRoom(ws);
+      break;
+    }
+    case 'push-sub': {
+      // Register this member's phone for background notifications.
+      const room = ws.room;
+      if (!room) return;
+      const now = Date.now();
+      if (now - (ws.lastPushSubAt || 0) < 5000) return;
+      ws.lastPushSubAt = now;
+      const sub = msg.sub;
+      if (
+        !sub ||
+        typeof sub.endpoint !== 'string' ||
+        !/^https:\/\//.test(sub.endpoint) ||
+        sub.endpoint.length > 1024 ||
+        !sub.keys ||
+        typeof sub.keys.p256dh !== 'string' ||
+        typeof sub.keys.auth !== 'string' ||
+        sub.keys.p256dh.length > 256 ||
+        sub.keys.auth.length > 128
+      ) {
+        return;
+      }
+      room.pushSubs.set(ws.id, {
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+      });
       break;
     }
     case 'away': {
@@ -357,6 +445,7 @@ function onControl(ws, msg) {
       if (now - (ws.lastPingAll || 0) < 5000) return;
       ws.lastPingAll = now;
       broadcast(room, { t: 'ping-all', by: { id: ws.id, name: ws.name } }, null);
+      pushRoom(room, 'ping', 30000, `🔔 ${ws.name} pinged #${room.code}`, 'Everyone, check in!', ws.id);
       break;
     }
     case 'poll': {
@@ -381,6 +470,14 @@ function onControl(ws, msg) {
         room,
         { t: 'poll', q: room.poll.q, a: room.poll.a, b: room.poll.b, by: room.poll.by },
         null
+      );
+      pushRoom(
+        room,
+        'poll',
+        60000,
+        `🗳️ ${ws.name} asks on #${room.code}`,
+        `${room.poll.q} — ${room.poll.a} / ${room.poll.b}`,
+        ws.id
       );
       break;
     }
@@ -447,6 +544,7 @@ function onControl(ws, msg) {
       ws.statusAt = now; // statuses fade out on their own after STATUS_TTL_MS
       broadcast(room, { t: 'status', id: ws.id, name: ws.name, text }, null);
       broadcast(room, rosterOf(room), null);
+      if (text) pushRoom(room, 'status', 60000, `#${room.code}`, `💬 ${ws.name}: ${text}`, ws.id);
       break;
     }
     case 'speed': {
@@ -476,6 +574,14 @@ function onControl(ws, msg) {
         room,
         { t: 'overspeed', id: ws.id, name: ws.name, kmh, v: room.roastSeq++ },
         null
+      );
+      pushRoom(
+        room,
+        'roast',
+        120000,
+        `🚨 ${ws.name}: ${kmh} km/h on #${room.code}`,
+        'bhencho bhencho — dheere chala!',
+        ws.id
       );
       break;
     }
@@ -534,6 +640,7 @@ function onAudio(ws, data) {
       },
       null
     );
+    pushRoom(room, 'photo', 60000, `📸 ${ws.name} shared a photo on #${room.code}`, 'Tap to see it', ws.id);
     return;
   }
   if (data.length >= 8 && data.readUInt32LE(0) === 0) {
@@ -599,6 +706,11 @@ function serveStatic(req, res) {
   if (pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     return res.end('ok v' + SERVER_VER);
+  }
+  if (pathname === '/pushkey') {
+    // Public VAPID key the client subscribes with; must match our sender key.
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ key: VAPID_PUBLIC }));
   }
   // Paths without a file extension are channel share links -> serve the app.
   let rel = pathname.replace(/\/+$/, '') || '/';
@@ -875,4 +987,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { server, wss, rooms, normalizeCode };
+module.exports = { server, wss, rooms, normalizeCode, pushLog };

@@ -1,5 +1,5 @@
 /* Talkie service worker — offline app shell. Audio itself needs the network. */
-const CACHE = 'talkie-v21';
+const CACHE = 'talkie-v22';
 const ASSETS = [
   '/',
   '/style.css',
@@ -28,6 +28,39 @@ self.addEventListener('activate', (e) => {
       .keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
+  );
+});
+
+// Background notifications: the phone can't play the channel while locked,
+// but it can buzz — "X is talking", "X pinged", "photo shared".
+self.addEventListener('push', (e) => {
+  let d = {};
+  try {
+    d = e.data ? e.data.json() : {};
+  } catch {}
+  e.waitUntil(
+    self.registration.showNotification(d.title || 'Talkie', {
+      body: d.body || '',
+      tag: d.tag || 'talkie',
+      icon: '/icons/icon-192.png',
+      badge: '/icons/favicon-32.png',
+      data: { room: d.room || '' },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const room = (e.notification.data && e.notification.data.room) || '';
+  e.waitUntil(
+    clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then((list) => {
+        for (const c of list) {
+          if ('focus' in c) return c.focus(); // the app is open — bring it up
+        }
+        return clients.openWindow('/' + room);
+      })
   );
 });
 

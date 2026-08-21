@@ -10,9 +10,10 @@ process.env.GHOST_TTL_MS = '600';
 process.env.ROOM_TTL_MS = '2000';
 process.env.SWEEP_MS = '150';
 process.env.SEQ_BASE = '0'; // deterministic photo/clip ids for assertions
+process.env.PUSH_DRYRUN = '1'; // capture pushes in pushLog instead of sending
 
 const require = createRequire(import.meta.url);
-const { server, wss } = require('../server.js');
+const { server, wss, pushLog } = require('../server.js');
 const WebSocket = require('ws');
 
 let port;
@@ -303,6 +304,63 @@ test('an emptied room keeps its limit and photos within the grace window', async
   assert.equal(roster.photoMeta[0].name, 'Alice');
   const bin = await c.next((m) => m.binary && m.data.readUInt32LE(0) === MARK);
   assert.equal(bin.data.readUInt32LE(4), 1);
+  c.close();
+});
+
+test('push: away/offline subscribed members get buzzed; foreground and left do not', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'push-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'push-room', name: 'Bob' });
+  const jb = await b.next((m) => m.t === 'joined');
+  b.j({
+    t: 'push-sub',
+    sub: { endpoint: 'https://push.example/bob', keys: { p256dh: 'k', auth: 'a' } },
+  });
+  await new Promise((r) => setTimeout(r, 60));
+
+  // Bob is looking at the app: a ping must NOT buzz him.
+  a.j({ t: 'ping-all' });
+  await b.next((m) => m.t === 'ping-all');
+  assert.equal(pushLog.filter((p) => p.id === jb.id).length, 0);
+
+  // Bob backgrounds the app: a status buzzes him.
+  b.j({ t: 'away', on: true });
+  await a.next((m) => m.t === 'roster' && m.members.some((x) => x.p === 'bg'));
+  a.j({ t: 'status', text: 'chalo chalte hai' });
+  await b.next((m) => m.t === 'status');
+  const buzzed = pushLog.filter((p) => p.id === jb.id);
+  assert.equal(buzzed.length, 1);
+  assert.ok(buzzed[0].payload.body.includes('chalo'));
+  assert.equal(buzzed[0].payload.room, 'push-room');
+
+  // Bob's phone drops entirely (away ghost): someone talking buzzes him too.
+  b.terminate();
+  await a.next((m) => m.t === 'roster' && m.members.some((x) => x.away));
+  a.j({ t: 'ptt-start', tx: 12 });
+  await a.next((m) => m.t === 'granted');
+  a.j({ t: 'ptt-end', tx: 12 });
+  assert.ok(pushLog.some((p) => p.id === jb.id && p.payload.title.includes('talking')));
+
+  // Explicit leave unsubscribes: no buzz after a goodbye.
+  const c = await client();
+  c.j({ t: 'join', room: 'push-room', name: 'Cara' });
+  const jc = await c.next((m) => m.t === 'joined');
+  c.j({
+    t: 'push-sub',
+    sub: { endpoint: 'https://push.example/cara', keys: { p256dh: 'k', auth: 'a' } },
+  });
+  await new Promise((r) => setTimeout(r, 60));
+  c.j({ t: 'leave' });
+  await a.next((m) => m.t === 'peer-leave' && m.name === 'Cara');
+  const photo = Buffer.alloc(4 + 100);
+  photo.writeUInt32LE(0xfffffffe, 0);
+  a.send(photo);
+  await a.next((m) => m.t === 'photo');
+  assert.equal(pushLog.filter((p) => p.id === jc.id).length, 0);
+
+  a.close();
   c.close();
 });
 

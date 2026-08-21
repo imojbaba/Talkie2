@@ -8,6 +8,8 @@
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 
+process.env.PUSH_DRYRUN = '1'; // never attempt real push sends from tests
+
 const require = createRequire(import.meta.url);
 const { server, wss } = require('../server.js');
 const { chromium } = require('playwright-core');
@@ -382,7 +384,7 @@ try {
   await ctxF.close();
 
   // PWA bits reachable
-  for (const p of ['/manifest.webmanifest', '/sw.js', '/worklet.js', '/icons/icon-192.png', '/healthz']) {
+  for (const p of ['/manifest.webmanifest', '/sw.js', '/worklet.js', '/icons/icon-192.png', '/healthz', '/pushkey']) {
     const res = await alice.evaluate(async (u) => (await fetch(u)).status, p);
     check(`GET ${p} -> 200`, res === 200);
   }

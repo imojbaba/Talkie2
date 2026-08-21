@@ -21,6 +21,7 @@
     statusClear: $('#statusClear'),
     sheetClose: $('#sheetClose'),
     pingBtn: $('#pingBtn'),
+    notifBtn: $('#notifBtn'),
     mapBtn: $('#mapBtn'),
     photoBtn: $('#photoBtn'),
     photoInput: $('#photoInput'),
@@ -71,7 +72,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.9';
+  const APP_VERSION = '3.0';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -135,6 +136,7 @@
     pendingPhoto: null, // my just-uploaded JPEG blob, adopted on server ack
     held: false, // another app owns the phone's audio (call/camera/background)
     hold: { mic: false, ctx: false, hidden: false },
+    push: 'off', // background notifications: 'off' | 'on'
     wake: null,
     stats: { framesTx: 0, framesRx: 0, rxEnergy: 0 },
   };
@@ -322,7 +324,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=29'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=30'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1156,6 +1158,8 @@
         if (state.limitKmh) startGeo();
         if (msg.back) toast('👋 Back on the trip');
         loadCachedPhotos(); // this phone's trip album appears instantly
+        sendPushSub(); // re-register notifications (no-op unless allowed)
+        setTimeout(maybeOfferPush, 2500);
         break;
       }
       case 'roster': {
@@ -1909,6 +1913,96 @@
     }
   }
 
+  // ---------------------------------------------------- push notifications
+  // A locked phone can't play the channel, but it can buzz: the server sends
+  // "X is talking / pinged / shared a photo" while the app is in background.
+  function urlB64ToU8(s) {
+    const pad = '='.repeat((4 - (s.length % 4)) % 4);
+    const b64 = (s + pad).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(b64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const IS_STANDALONE =
+    (window.matchMedia && matchMedia('(display-mode: standalone)').matches) ||
+    navigator.standalone === true;
+
+  function pushSupported() {
+    // iOS only exposes the Push API to apps opened from the Home Screen.
+    return (
+      'serviceWorker' in navigator &&
+      'PushManager' in window &&
+      'Notification' in window &&
+      window.isSecureContext
+    );
+  }
+
+  async function sendPushSub() {
+    try {
+      if (!pushSupported() || Notification.permission !== 'granted') return;
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const r = await fetch('/pushkey', { cache: 'no-store' });
+        const { key } = await r.json();
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlB64ToU8(key),
+        });
+      }
+      state.push = 'on';
+      wsSend({ t: 'push-sub', sub: sub.toJSON() });
+    } catch {}
+  }
+
+  async function enablePush() {
+    if (!pushSupported()) return;
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') {
+        toast('No problem — 🔔 lives in Trip tools if you change your mind');
+        return;
+      }
+      await sendPushSub();
+      if (state.push === 'on') {
+        toast('🔔 On — you’ll get pinged even when the app is closed');
+      }
+    } catch {}
+  }
+
+  const hideNotifBanner = () => {
+    if (!els.banner.hidden && els.banner.textContent.includes('🔔')) banner('');
+  };
+
+  let pushPrompted = false;
+  function maybeOfferPush() {
+    if (pushPrompted || !state.joined || !els.banner.hidden) return;
+    pushPrompted = true;
+    if (pushSupported()) {
+      if (Notification.permission !== 'default') return;
+      banner(
+        '🔔 Get pinged when your phone is locked — someone talks, pings, or shares.',
+        'Turn on',
+        () => {
+          banner('');
+          enablePush();
+        }
+      );
+      setTimeout(hideNotifBanner, 15000);
+    } else if (IS_IOS && !IS_STANDALONE) {
+      const n = Number(storage.get('talkie.a2hs') || 0);
+      if (n >= 3) return; // don't nag forever
+      storage.set('talkie.a2hs', String(n + 1));
+      banner(
+        '🔔 Want pings when your phone is locked? Add Talkie to your Home Screen: Share → “Add to Home Screen”, then open it from the icon.'
+      );
+      setTimeout(hideNotifBanner, 15000);
+    }
+  }
+
   async function keepAwake() {
     try {
       if ('wakeLock' in navigator && state.joined) {
@@ -2059,6 +2153,19 @@
     els.pingBtn.addEventListener('click', () => {
       wsSend({ t: 'ping-all' });
       els.sheet.hidden = true;
+    });
+    els.notifBtn.addEventListener('click', () => {
+      els.sheet.hidden = true;
+      if (pushSupported()) {
+        enablePush();
+      } else if (IS_IOS && !IS_STANDALONE) {
+        banner(
+          '🔔 On iPhone: add Talkie to your Home Screen first — Share → “Add to Home Screen” — then open it from the icon and tap 🔔 again.'
+        );
+        setTimeout(hideNotifBanner, 15000);
+      } else {
+        toast('This browser doesn’t support notifications');
+      }
     });
     els.mapBtn.addEventListener('click', () => {
       if (!state.mapOn) {
