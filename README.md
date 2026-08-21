@@ -130,10 +130,11 @@ phone A                      server                       phone B
   needed) and plays through the loudspeaker with a volume-boosting
   limiter. Use the volume keys *while audio is playing* to raise media
   volume.
-- **Phone calls override Talkie**: when a normal/WhatsApp call (or the
-  camera, or any app that takes the phone's audio) starts, Talkie goes
+- **Phone calls override Talkie**: when a normal/WhatsApp call (or
+  anything else that takes over the phone's audio) starts, Talkie goes
   **on hold** — no playback, no roasts, no transmitting — and resumes
-  by itself when the call ends or you come back.
+  by itself when the call ends. Simply switching to another app does
+  NOT silence the channel.
 - **Backgrounding**: phones freeze web pages in the background — no web
   app can keep receiving with the screen off (that's native-app
   territory). Talkie holds a screen wake lock while you're on a channel

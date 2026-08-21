@@ -45,7 +45,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.2';
+  const APP_VERSION = '2.3';
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
@@ -209,7 +209,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=22'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=23'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -696,7 +696,9 @@
   }
 
   function updateHold() {
-    const h = state.hold.mic || state.hold.ctx || state.hold.hidden;
+    // Hold only when something actually seizes the phone's audio (a call);
+    // merely switching apps must NOT silence the channel.
+    const h = state.hold.mic || state.hold.ctx;
     if (h === state.held) return;
     state.held = h;
     if (h) {
@@ -1445,8 +1447,6 @@
   }
 
   document.addEventListener('visibilitychange', () => {
-    state.hold.hidden = document.visibilityState === 'hidden';
-    updateHold();
     if (document.visibilityState === 'visible') {
       if (state.ctx && state.ctx.state !== 'running') {
         state.ctx.resume().catch(() => {});
