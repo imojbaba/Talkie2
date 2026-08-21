@@ -5,7 +5,8 @@
   <title>Talkie — Push to Talk</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="description" content="Walkie-talkie in your browser. One word to join, hold to talk.">
-  <meta name="theme-color" content="#0b1220">
+  <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
@@ -14,7 +15,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Talkie">
-  <link rel="stylesheet" href="/style.css?v=26">
+  <link rel="stylesheet" href="/style.css?v=27">
 </head>
 <body data-screen="join">
   <main class="app">
@@ -51,7 +52,7 @@
       </div>
 
       <p class="hint">Tell your friend the word — same word, same channel.<br>Anyone who knows the word can join, so keep it between you.</p>
-      <p class="ver">v2.6</p>
+      <p class="ver">v2.7</p>
     </section>
 
     <section id="channel" class="screen" hidden>
@@ -97,10 +98,11 @@
       </div>
 
       <div id="status" class="status" data-mode="idle">Channel clear</div>
+      <button id="inviteHint" type="button" class="pill" hidden>📤 Invite a friend</button>
       <div id="speedLine" class="speedLine"></div>
       <div class="meterWrap" aria-hidden="true"><div id="meter"></div></div>
       <p class="kbHint">Tip: hold <kbd>Space</kbd> to talk</p>
-      <p class="ver">v2.6</p>
+      <p class="ver">v2.7</p>
     </section>
 
   </main>
@@ -137,6 +139,6 @@
   </div>
   <div id="photoView" class="sheet" hidden><img id="photoImg" alt="Shared photo"></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=26"></script>
+  <script src="/app.js?v=27"></script>
 </body>
 </html>

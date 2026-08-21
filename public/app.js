@@ -46,6 +46,7 @@
     pttLabel: $('#pttLabel'),
     status: $('#status'),
     speedLine: $('#speedLine'),
+    inviteHint: $('#inviteHint'),
     meter: $('#meter'),
     toast: $('#toast'),
   };
@@ -68,7 +69,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.6';
+  const APP_VERSION = '2.7';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -239,7 +240,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=26'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=27'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1464,6 +1465,7 @@
       status = 'Channel clear — hold to talk';
     }
     els.status.textContent = status;
+    els.inviteHint.hidden = !(state.joined && state.members.length < 2 && !state.held);
     els.status.dataset.mode =
       state.talk === 'live' ? 'live' : someoneElse ? 'incoming' : 'idle';
     els.pttLabel.textContent =
@@ -1752,8 +1754,30 @@
     els.name.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') (els.code.value ? doJoin() : els.code.focus());
     });
-    els.leaveBtn.addEventListener('click', leave);
+    // Leave needs a second tap within 2.5 s - it sits near everyday buttons.
+    let leaveArmed = 0;
+    els.leaveBtn.addEventListener('click', () => {
+      const now = Date.now();
+      if (now - leaveArmed < 2500) {
+        leaveArmed = 0;
+        els.leaveBtn.textContent = 'Leave';
+        els.leaveBtn.classList.remove('armed');
+        leave();
+        return;
+      }
+      leaveArmed = now;
+      els.leaveBtn.textContent = 'Sure?';
+      els.leaveBtn.classList.add('armed');
+      setTimeout(() => {
+        if (leaveArmed && Date.now() - leaveArmed >= 2400) {
+          leaveArmed = 0;
+          els.leaveBtn.textContent = 'Leave';
+          els.leaveBtn.classList.remove('armed');
+        }
+      }, 2600);
+    });
     els.shareBtn.addEventListener('click', share);
+    els.inviteHint.addEventListener('click', share);
     renderLimit(); // channel-wide limit arrives from the server after joining
     els.limitBtn.addEventListener('click', cycleLimit);
     try { speechSynthesis.getVoices(); } catch {} // warm the voice list
