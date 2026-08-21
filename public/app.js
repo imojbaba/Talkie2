@@ -22,6 +22,12 @@
     sheetClose: $('#sheetClose'),
     pingBtn: $('#pingBtn'),
     notifBtn: $('#notifBtn'),
+    installBtn: $('#installBtn'),
+    installSheet: $('#installSheet'),
+    installInApp: $('#installInApp'),
+    installIosSteps: $('#installIosSteps'),
+    installAndroidSteps: $('#installAndroidSteps'),
+    installClose: $('#installClose'),
     mapBtn: $('#mapBtn'),
     photoBtn: $('#photoBtn'),
     photoInput: $('#photoInput'),
@@ -72,7 +78,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '3.0';
+  const APP_VERSION = '3.1';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -324,7 +330,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=30'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=31'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1977,6 +1983,22 @@
     if (!els.banner.hidden && els.banner.textContent.includes('🔔')) banner('');
   };
 
+  // ------------------------------------------------------- install (PWA)
+  // Android/Chrome hands us a real install prompt; iPhone has no install
+  // API, so the button opens step-by-step instructions instead.
+  let deferredInstall = null;
+
+  function renderInstallBtn() {
+    els.installBtn.hidden = IS_STANDALONE || !(deferredInstall || IS_IOS || IN_APP);
+  }
+
+  function openInstallSheet() {
+    els.installInApp.hidden = !IN_APP;
+    els.installIosSteps.hidden = !IS_IOS;
+    els.installAndroidSteps.hidden = IS_IOS;
+    els.installSheet.hidden = false;
+  }
+
   let pushPrompted = false;
   function maybeOfferPush() {
     if (pushPrompted || !state.joined || !els.banner.hidden) return;
@@ -1997,7 +2019,12 @@
       if (n >= 3) return; // don't nag forever
       storage.set('talkie.a2hs', String(n + 1));
       banner(
-        '🔔 Want pings when your phone is locked? Add Talkie to your Home Screen: Share → “Add to Home Screen”, then open it from the icon.'
+        '🔔 Want pings when your phone is locked? Install Talkie to your Home Screen first.',
+        'Show me how',
+        () => {
+          banner('');
+          openInstallSheet();
+        }
       );
       setTimeout(hideNotifBanner, 15000);
     }
@@ -2063,6 +2090,41 @@
     els.dice.addEventListener('click', () => {
       els.code.value = randomWord();
     });
+    // Install-as-part-of-joining: Chrome hands us its native prompt; iPhone
+    // (no install API) gets the step-by-step sheet instead.
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredInstall = e;
+      renderInstallBtn();
+    });
+    window.addEventListener('appinstalled', () => {
+      deferredInstall = null;
+      renderInstallBtn();
+      toast('📲 Installed — Talkie is on your home screen now');
+    });
+    els.installBtn.addEventListener('click', async () => {
+      if (deferredInstall) {
+        const p = deferredInstall;
+        deferredInstall = null;
+        renderInstallBtn();
+        try {
+          p.prompt();
+          const choice = await p.userChoice;
+          if (!choice || choice.outcome !== 'accepted') {
+            toast('No problem — the button stays here if you change your mind');
+          }
+        } catch {
+          openInstallSheet();
+        }
+      } else {
+        openInstallSheet();
+      }
+    });
+    els.installClose.addEventListener('click', () => (els.installSheet.hidden = true));
+    els.installSheet.addEventListener('click', (e) => {
+      if (e.target === els.installSheet) els.installSheet.hidden = true;
+    });
+    renderInstallBtn();
     els.joinBtn.addEventListener('click', doJoin);
     els.code.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') doJoin();
@@ -2159,10 +2221,7 @@
       if (pushSupported()) {
         enablePush();
       } else if (IS_IOS && !IS_STANDALONE) {
-        banner(
-          '🔔 On iPhone: add Talkie to your Home Screen first — Share → “Add to Home Screen” — then open it from the icon and tap 🔔 again.'
-        );
-        setTimeout(hideNotifBanner, 15000);
+        openInstallSheet(); // notifications need the installed app on iPhone
       } else {
         toast('This browser doesn’t support notifications');
       }

@@ -383,6 +383,34 @@ try {
   await ctxE.close();
   await ctxF.close();
 
+  // 📲 Install button: hidden by default, shows when the browser offers an
+  // install prompt, and fires that native prompt on tap.
+  const ctxI = await browser.newContext();
+  const iris = await ctxI.newPage();
+  iris.on('pageerror', (e) => console.log('[Iris pageerror]', e.message));
+  await iris.goto(url, { waitUntil: 'load' });
+  const hiddenAtBoot = await iris.evaluate(() => document.querySelector('#installBtn').hidden);
+  await iris.evaluate(() => {
+    const ev = new Event('beforeinstallprompt');
+    ev.prompt = () => {
+      window.__installPrompted = true;
+    };
+    ev.userChoice = Promise.resolve({ outcome: 'accepted' });
+    window.dispatchEvent(ev);
+  });
+  await iris.waitForFunction(() => !document.querySelector('#installBtn').hidden, null, {
+    timeout: 5000,
+  });
+  await iris.click('#installBtn');
+  await iris.waitForFunction(() => window.__installPrompted === true, null, { timeout: 5000 });
+  const hiddenAfter = await iris.evaluate(() => document.querySelector('#installBtn').hidden);
+  check(
+    'install button: hidden until installable, fires the native prompt',
+    hiddenAtBoot && hiddenAfter,
+    `boot=${hiddenAtBoot} after=${hiddenAfter}`
+  );
+  await ctxI.close();
+
   // PWA bits reachable
   for (const p of ['/manifest.webmanifest', '/sw.js', '/worklet.js', '/icons/icon-192.png', '/healthz', '/pushkey']) {
     const res = await alice.evaluate(async (u) => (await fetch(u)).status, p);

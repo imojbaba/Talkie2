@@ -136,6 +136,16 @@ body {
 }
 .cta:active { transform: scale(0.98); }
 .cta:disabled { opacity: 0.6; }
+.cta.ghost {
+  background: transparent; color: var(--accent);
+  border: 1.5px solid var(--line); box-shadow: none;
+  margin-top: 10px;
+}
+.steps {
+  margin: 4px 0 4px 2px; padding-left: 22px;
+  display: flex; flex-direction: column; gap: 8px;
+  font-size: 0.92rem;
+}
 
 .err { color: var(--danger); font-size: 0.9rem; }
 .err.info { color: var(--dim); }
