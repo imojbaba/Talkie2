@@ -45,7 +45,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.1';
+  const APP_VERSION = '2.2';
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
@@ -77,6 +77,9 @@
     micErr: null,
     srcNode: null,
     retry: 0,
+    transport: 'ws', // 'ws' | 'poll' (HTTP fallback for WebSocket-blocking networks)
+    wsFails: 0,
+    pollFails: 0,
     lastMsgAt: 0,
     lastDenied: null,
     geoOk: false,
@@ -206,7 +209,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=21'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=22'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -784,7 +787,7 @@
       const txt = r.ok ? await r.text() : '';
       if (r.ok && /^ok/.test(txt)) {
         msg =
-          '🔌 The server is awake, but this phone/network is blocking the live connection (WebSocket). Try: turn off iCloud Private Relay or any VPN/content blocker for this site, or switch between Wi-Fi and mobile data.';
+          '🔌 This network blocks the usual live connection — switching to compatibility mode automatically, hang on…';
         if (!state.ws) {
           state.retry = 0; // server reachable: reconnect right now
           if (state.joined || state.joining) connect();
@@ -803,6 +806,109 @@
     }
   }
 
+  // HTTP fallback transport: same surface as a WebSocket, but runs over
+  // POST (upstream, with [u32 len] batching for audio) + long-poll GET
+  // (downstream, [u8 kind][u32 len] frames). For networks that block ws.
+  function makePollTransport() {
+    const t = {
+      readyState: 0,
+      binaryType: 'arraybuffer',
+      onopen: null,
+      onmessage: null,
+      onclose: null,
+      onerror: null,
+      _token: null,
+      _dead: false,
+      _batch: [],
+      _batchTimer: 0,
+      send(data) {
+        if (t.readyState !== 1) return;
+        if (typeof data === 'string') {
+          fetch('/poll/send?t=' + t._token, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: data,
+            keepalive: true,
+          }).catch(() => t._fail());
+        } else {
+          t._batch.push(new Uint8Array(data));
+          if (!t._batchTimer) t._batchTimer = setTimeout(() => t._flush(), 120);
+        }
+      },
+      _flush() {
+        t._batchTimer = 0;
+        if (!t._batch.length || t.readyState !== 1) return;
+        let total = 0;
+        for (const b of t._batch) total += 4 + b.length;
+        const out = new Uint8Array(total);
+        const dv = new DataView(out.buffer);
+        let off = 0;
+        for (const b of t._batch) {
+          dv.setUint32(off, b.length, true);
+          off += 4;
+          out.set(b, off);
+          off += b.length;
+        }
+        t._batch = [];
+        fetch('/poll/send?t=' + t._token, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: out,
+        }).catch(() => t._fail());
+      },
+      close() {
+        if (t._dead) return;
+        t._dead = true;
+        t.readyState = 3;
+        if (t._token) {
+          try {
+            fetch('/poll/close?t=' + t._token, { method: 'POST', keepalive: true });
+          } catch {}
+        }
+        t.onclose && t.onclose();
+      },
+      _fail() {
+        if (t._dead) return;
+        t._dead = true;
+        t.readyState = 3;
+        t.onclose && t.onclose();
+      },
+    };
+    (async () => {
+      try {
+        const r = await fetch('/poll/open', { method: 'POST', cache: 'no-store' });
+        if (!r.ok) throw 0;
+        const j = await r.json();
+        if (t._dead) return;
+        t._token = j.token;
+        t.readyState = 1;
+        t.onopen && t.onopen();
+        while (!t._dead) {
+          const er = await fetch('/poll/events?t=' + t._token, { cache: 'no-store' });
+          if (t._dead) break;
+          if (!er.ok) throw 0;
+          const buf = await er.arrayBuffer();
+          const dv = new DataView(buf);
+          let off = 0;
+          while (off + 5 <= buf.byteLength) {
+            const bin = dv.getUint8(off) === 1;
+            const len = dv.getUint32(off + 1, true);
+            off += 5;
+            if (off + len > buf.byteLength) break;
+            const payload = buf.slice(off, off + len);
+            off += len;
+            if (t.onmessage) {
+              t.onmessage({ data: bin ? payload : new TextDecoder().decode(payload) });
+            }
+          }
+        }
+      } catch {
+        t._fail();
+      }
+    })();
+    return t;
+  }
+
   function connect() {
     state.joining = true;
     setConn('connecting');
@@ -811,11 +917,22 @@
       els.joinErr.classList.add('info');
       els.joinErr.hidden = false;
     }
-    const ws = new WebSocket(wsUrl());
-    ws.binaryType = 'arraybuffer';
+    const usePoll = state.transport === 'poll';
+    let ws;
+    try {
+      ws = usePoll ? makePollTransport() : new WebSocket(wsUrl());
+    } catch {
+      state.transport = 'poll';
+      ws = makePollTransport();
+    }
+    if (ws.binaryType !== 'arraybuffer') ws.binaryType = 'arraybuffer';
     state.ws = ws;
+    let opened = false;
 
     ws.onopen = () => {
+      opened = true;
+      if (state.transport === 'ws') state.wsFails = 0;
+      else state.pollFails = 0;
       state.lastMsgAt = Date.now();
       ws.send(JSON.stringify({ t: 'join', room: state.code, name: state.name }));
     };
@@ -847,6 +964,25 @@
         return;
       }
       if (state.joined || state.joining) {
+        if (!opened) {
+          // Never connected at all: after two ws failures, drop to the HTTP
+          // fallback; if that also keeps failing, alternate back.
+          if (state.transport === 'ws') {
+            state.wsFails++;
+            if (state.wsFails >= 2) {
+              state.transport = 'poll';
+              state.pollFails = 0;
+              state.retry = 0;
+              toast('Switching to compatibility mode…');
+            }
+          } else {
+            state.pollFails++;
+            if (state.pollFails >= 3) {
+              state.transport = 'ws';
+              state.wsFails = 0;
+            }
+          }
+        }
         setConn('down');
         render();
         if (!state.joined) {

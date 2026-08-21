@@ -30,7 +30,7 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const SERVER_VER = 8;
+const SERVER_VER = 9;
 const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE) || 16;
 const SPEAKER_TIMEOUT_MS = Number(process.env.SPEAKER_TIMEOUT_MS) || 5000;
 const MAX_BINARY_BYTES = 8 * 1024;
@@ -291,16 +291,20 @@ function onAudio(ws, data) {
 
 // ---------------------------------------------------------------- HTTP static
 function serveStatic(req, res) {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    res.writeHead(405, { Allow: 'GET, HEAD' });
-    return res.end('Method Not Allowed');
-  }
   let pathname;
+  let query;
   try {
-    pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    const u = new URL(req.url, 'http://x');
+    pathname = decodeURIComponent(u.pathname);
+    query = u.searchParams;
   } catch {
     res.writeHead(400);
     return res.end('Bad Request');
+  }
+  if (pathname.startsWith('/poll/')) return handlePoll(req, res, pathname, query);
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { Allow: 'GET, HEAD' });
+    return res.end('Method Not Allowed');
   }
   if (pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -333,29 +337,188 @@ function serveStatic(req, res) {
 const server = http.createServer(serveStatic);
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 512 * 1024 });
 
-wss.on('connection', (ws) => {
-  ws.id = crypto.randomBytes(3).toString('hex');
-  ws.name = 'Guest-' + ws.id.slice(0, 2);
-  ws.room = null;
-  ws.isAlive = true;
-  ws.tokens = AUDIO_BURST_BYTES;
-  ws.lastRefill = Date.now();
+function initClient(c) {
+  c.id = crypto.randomBytes(3).toString('hex');
+  c.name = 'Guest-' + c.id.slice(0, 2);
+  c.room = null;
+  c.isAlive = true;
+  c.tokens = AUDIO_BURST_BYTES;
+  c.lastRefill = Date.now();
+}
 
+function handleMessage(c, data, isBinary) {
+  if (isBinary) return onAudio(c, data);
+  if (data.length > MAX_TEXT_BYTES) return;
+  let msg;
+  try {
+    msg = JSON.parse(data.toString());
+  } catch {
+    return;
+  }
+  if (msg && typeof msg.t === 'string') onControl(c, msg);
+}
+
+wss.on('connection', (ws) => {
+  initClient(ws);
   ws.on('pong', () => (ws.isAlive = true));
   ws.on('error', () => {});
   ws.on('close', () => leaveRoom(ws));
-  ws.on('message', (data, isBinary) => {
-    if (isBinary) return onAudio(ws, data);
-    if (data.length > MAX_TEXT_BYTES) return;
-    let msg;
-    try {
-      msg = JSON.parse(data.toString());
-    } catch {
+  ws.on('message', (data, isBinary) => handleMessage(ws, data, isBinary));
+});
+
+// ------------------------------------------------ HTTP fallback transport
+// Some networks (iOS content filters, strict proxies) block WebSockets while
+// plain HTTPS works. These sessions mimic a ws client over POST + long-poll.
+const pollSessions = new Map();
+
+function makePollClient(token) {
+  const c = {
+    token,
+    readyState: 1,
+    OPEN: 1,
+    outbox: [],
+    outboxBytes: 0,
+    waiter: null,
+    lastSeen: Date.now(),
+    bufferedAmount: 0,
+    send(data) {
+      const bin = typeof data !== 'string';
+      const d = bin ? Buffer.from(data) : Buffer.from(String(data), 'utf8');
+      this.outbox.push({ bin, d });
+      this.outboxBytes += d.length;
+      while (this.outboxBytes > 2_000_000 && this.outbox.length) {
+        this.outboxBytes -= this.outbox.shift().d.length;
+      }
+      if (this.waiter) {
+        const w = this.waiter;
+        this.waiter = null;
+        w();
+      }
+    },
+    ping() {},
+    terminate() {
+      this.readyState = 3;
+    },
+    close() {
+      this.readyState = 3;
+    },
+  };
+  initClient(c);
+  return c;
+}
+
+function readBody(req, res, limit, cb) {
+  const chunks = [];
+  let total = 0;
+  req.on('data', (ch) => {
+    total += ch.length;
+    if (total > limit) {
+      res.writeHead(413);
+      res.end();
+      req.destroy();
       return;
     }
-    if (msg && typeof msg.t === 'string') onControl(ws, msg);
+    chunks.push(ch);
   });
-});
+  req.on('end', () => cb(Buffer.concat(chunks)));
+  req.on('error', () => {});
+}
+
+function handlePoll(req, res, pathname, query) {
+  res.setHeader('Cache-Control', 'no-store');
+  if (pathname === '/poll/open' && req.method === 'POST') {
+    if (pollSessions.size >= 300) {
+      res.writeHead(503);
+      return res.end();
+    }
+    const token = crypto.randomBytes(12).toString('hex');
+    pollSessions.set(token, makePollClient(token));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ token }));
+  }
+  const c = pollSessions.get(query.get('t') || '');
+  if (!c || c.readyState !== 1) {
+    res.writeHead(410);
+    return res.end();
+  }
+  c.lastSeen = Date.now();
+  if (pathname === '/poll/send' && req.method === 'POST') {
+    readBody(req, res, CLIP_MAX_BYTES + 4096, (body) => {
+      const ct = req.headers['content-type'] || '';
+      if (ct.includes('json')) {
+        handleMessage(c, body, false);
+      } else {
+        // batched binary: [u32 len][payload] repeated
+        let off = 0;
+        while (off + 4 <= body.length) {
+          const len = body.readUInt32LE(off);
+          off += 4;
+          if (len === 0 || len > CLIP_MAX_BYTES || off + len > body.length) break;
+          onAudio(c, body.subarray(off, off + len));
+          off += len;
+        }
+      }
+      res.writeHead(204);
+      res.end();
+    });
+    return;
+  }
+  if (pathname === '/poll/events' && req.method === 'GET') {
+    const flush = () => {
+      const parts = [];
+      let total = 0;
+      while (c.outbox.length && total < 512 * 1024) {
+        const m = c.outbox.shift();
+        c.outboxBytes -= m.d.length;
+        const hdr = Buffer.alloc(5);
+        hdr[0] = m.bin ? 1 : 0;
+        hdr.writeUInt32LE(m.d.length, 1);
+        parts.push(hdr, m.d);
+        total += m.d.length + 5;
+      }
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(Buffer.concat(parts));
+      } catch {}
+    };
+    if (c.outbox.length) return flush();
+    const timer = setTimeout(() => {
+      if (c.waiter === wake) c.waiter = null;
+      flush();
+    }, 25000);
+    const wake = () => {
+      clearTimeout(timer);
+      flush();
+    };
+    c.waiter = wake;
+    req.on('close', () => {
+      clearTimeout(timer);
+      if (c.waiter === wake) c.waiter = null;
+    });
+    return;
+  }
+  if (pathname === '/poll/close' && req.method === 'POST') {
+    c.readyState = 3;
+    leaveRoom(c);
+    pollSessions.delete(c.token);
+    res.writeHead(204);
+    return res.end();
+  }
+  res.writeHead(404);
+  res.end();
+}
+
+const pollSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [token, c] of pollSessions) {
+    if (c.readyState !== 1 || now - c.lastSeen > 60000) {
+      c.readyState = 3;
+      leaveRoom(c);
+      pollSessions.delete(token);
+    }
+  }
+}, 15000);
+pollSweeper.unref();
 
 const sweeper = setInterval(() => {
   const now = Date.now();

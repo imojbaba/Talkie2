@@ -269,6 +269,54 @@ try {
   check('GPS overspeed detected and roast broadcast', g.kmh > 40, `${g.kmh} km/h`);
   await ctxD.close();
 
+  // WebSocket-blocked phone: constructor throws -> auto compatibility mode.
+  const ctxE = await browser.newContext();
+  await ctxE.addInitScript(() => {
+    window.WebSocket = class {
+      constructor() {
+        throw new Error('blocked by network');
+      }
+    };
+  });
+  const eve = await ctxE.newPage();
+  eve.on('pageerror', (e) => console.log('[Eve pageerror]', e.message));
+  await eve.goto(url, { waitUntil: 'load' });
+  await eve.fill('#name', 'Eve');
+  await eve.fill('#code', 'e2e-poll');
+  await eve.click('#joinBtn');
+  await eve.waitForFunction(() => window.__talkie.joined, null, { timeout: 15000 });
+  const mode = await eve.evaluate(() => window.__talkie.transport);
+  check('WebSocket-blocked page joins via compatibility mode', mode === 'poll', mode);
+  const ctxF = await browser.newContext();
+  const frank = await ctxF.newPage();
+  frank.on('pageerror', (e) => console.log('[Frank pageerror]', e.message));
+  await frank.goto(url, { waitUntil: 'load' });
+  await frank.fill('#name', 'Frank');
+  await frank.fill('#code', 'e2e-poll');
+  await frank.click('#joinBtn');
+  await frank.waitForFunction(
+    () => window.__talkie.joined && window.__talkie.members.length === 2,
+    null,
+    { timeout: 15000 }
+  );
+  await frank.waitForFunction(() => window.__talkie.micOk, null, { timeout: 10000 });
+  await frank.keyboard.down('Space');
+  await eve.waitForFunction(() => window.__talkie.stats.framesRx > 10, null, {
+    timeout: 12000,
+  });
+  await frank.keyboard.up('Space');
+  check('ws -> compatibility-mode audio flows', true);
+  await eve.waitForFunction(() => window.__talkie.micOk, null, { timeout: 10000 });
+  await eve.keyboard.down('Space');
+  await eve.waitForFunction(() => window.__talkie.talk === 'live', null, { timeout: 10000 });
+  await frank.waitForFunction(() => window.__talkie.stats.framesRx > 10, null, {
+    timeout: 12000,
+  });
+  await eve.keyboard.up('Space');
+  check('compatibility-mode -> ws audio flows', true);
+  await ctxE.close();
+  await ctxF.close();
+
   // PWA bits reachable
   for (const p of ['/manifest.webmanifest', '/sw.js', '/worklet.js', '/icons/icon-192.png', '/healthz']) {
     const res = await alice.evaluate(async (u) => (await fetch(u)).status, p);

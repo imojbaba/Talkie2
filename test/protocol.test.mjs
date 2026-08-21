@@ -308,3 +308,68 @@ test('live speed relays to peers, rate-limited, no echo', async () => {
   a.close();
   b.close();
 });
+
+test('HTTP fallback transport: join and interop with ws clients', async () => {
+  const base = `http://127.0.0.1:${port}`;
+  const a = await client();
+  a.j({ t: 'join', room: 'poll-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+
+  const open = await fetch(base + '/poll/open', { method: 'POST' });
+  const { token } = await open.json();
+  const post = (body, json) =>
+    fetch(base + '/poll/send?t=' + token, {
+      method: 'POST',
+      headers: { 'Content-Type': json ? 'application/json' : 'application/octet-stream' },
+      body,
+    });
+  const events = async () => {
+    const r = await fetch(base + '/poll/events?t=' + token);
+    const buf = Buffer.from(await r.arrayBuffer());
+    const out = [];
+    let off = 0;
+    while (off + 5 <= buf.length) {
+      const bin = buf[off] === 1;
+      const len = buf.readUInt32LE(off + 1);
+      off += 5;
+      const d = buf.subarray(off, off + len);
+      off += len;
+      out.push(bin ? { binary: true, data: Buffer.from(d) } : JSON.parse(d.toString()));
+    }
+    return out;
+  };
+
+  await post(JSON.stringify({ t: 'join', room: 'poll-room', name: 'Pia' }), true);
+  let got = [];
+  for (let i = 0; i < 5 && !got.find((m) => m.t === 'joined'); i++) {
+    got = got.concat(await events());
+  }
+  assert.ok(got.find((m) => m.t === 'joined'), 'poll client joined');
+  await a.next((m) => m.t === 'roster' && m.members.length === 2);
+
+  // ws -> poll audio
+  a.j({ t: 'ptt-start', tx: 44 });
+  await a.next((m) => m.t === 'granted');
+  a.send(frame(44));
+  let gotBin = null;
+  for (let i = 0; i < 5 && !gotBin; i++) {
+    gotBin = (await events()).find((m) => m.binary && m.data.readUInt32LE(0) === 44);
+  }
+  assert.ok(gotBin, 'poll client received relayed audio');
+  a.j({ t: 'ptt-end', tx: 44 });
+
+  // poll -> ws audio, via the batched [u32 len][payload] upstream format
+  await post(JSON.stringify({ t: 'ptt-start', tx: 55 }), true);
+  const f = frame(55);
+  const batch = Buffer.alloc(4 + f.length);
+  batch.writeUInt32LE(f.length, 0);
+  f.copy(batch, 4);
+  await post(batch, false);
+  const rx = await a.next((m) => m.binary && m.data.readUInt32LE(0) === 55, 5000);
+  assert.equal(rx.data.length, f.length);
+
+  await fetch(base + '/poll/close?t=' + token, { method: 'POST' });
+  const roster = await a.next((m) => m.t === 'roster' && m.members.length === 1);
+  assert.equal(roster.members[0].name, 'Alice');
+  a.close();
+});
