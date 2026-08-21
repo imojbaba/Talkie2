@@ -2,7 +2,14 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
-process.env.SPEAKER_TIMEOUT_MS = '400';
+// Long enough that deliberate test silences (expectNone windows) don't trip
+// it now that the sweeper runs every 150 ms; short enough to test quickly.
+process.env.SPEAKER_TIMEOUT_MS = '1200';
+// Tiny trip-memory windows so presence/grace tests run in milliseconds.
+process.env.GHOST_TTL_MS = '600';
+process.env.ROOM_TTL_MS = '2000';
+process.env.SWEEP_MS = '150';
+process.env.SEQ_BASE = '0'; // deterministic photo/clip ids for assertions
 
 const require = createRequire(import.meta.url);
 const { server, wss } = require('../server.js');
@@ -143,7 +150,7 @@ test('floor times out when the speaker goes silent', async () => {
   b.close();
 });
 
-test('disconnecting speaker releases the floor and updates the roster', async () => {
+test('disconnecting speaker releases the floor and goes "away", then expires', async () => {
   const a = await client();
   const b = await client();
   a.j({ t: 'join', room: 'drop-room', name: 'Alice' });
@@ -158,8 +165,171 @@ test('disconnecting speaker releases the floor and updates the roster', async ()
 
   const end = await b.next((m) => m.t === 'ptt-end');
   assert.equal(end.reason, 'left');
+  // A dropped rider is "away", not gone — status column intact, no leave toast.
+  const roster = await b.next(
+    (m) => m.t === 'roster' && m.members.some((x) => x.name === 'Alice' && x.away)
+  );
+  assert.equal(roster.members.filter((x) => !x.away).length, 1);
+  await b.expectNone((m) => m.t === 'peer-leave');
+  // ...and quietly drops off after GHOST_TTL_MS.
+  await b.next((m) => m.t === 'roster' && m.members.length === 1, 3000);
+  b.close();
+});
+
+test('same uid rejoining is the same member: id, status, no ghost twin', async () => {
+  const uid = 'aabbccdd00112233';
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'uid-room', name: 'Alice', uid });
+  const j1 = await a.next((m) => m.t === 'joined');
+  assert.equal(j1.back, false);
+  b.j({ t: 'join', room: 'uid-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+  a.j({ t: 'status', text: '☕ chai' });
+  await b.next((m) => m.t === 'status' && m.text === '☕ chai');
+  // drain the roster that came with the status so it can't satisfy the
+  // post-rejoin predicate below
+  await b.next((m) => m.t === 'roster' && m.members.some((x) => x.status === '☕ chai'));
+
+  a.terminate(); // phone died mid-trip
+  await b.next((m) => m.t === 'roster' && m.members.some((x) => x.away));
+
+  const a2 = await client();
+  a2.j({ t: 'join', room: 'uid-room', name: 'Alice', uid });
+  const j2 = await a2.next((m) => m.t === 'joined');
+  assert.equal(j2.id, j1.id); // same person, same public id
+  assert.equal(j2.back, true);
+  // the rejoin roster: both live, and Alice's status survived the drop
+  const roster = await b.next(
+    (m) =>
+      m.t === 'roster' &&
+      m.members.length === 2 &&
+      m.members.every((x) => !x.away) &&
+      m.members.some((x) => x.name === 'Alice' && x.status === '☕ chai')
+  );
+  assert.equal(roster.members.find((x) => x.name === 'Alice').status, '☕ chai');
+  await b.expectNone((m) => m.t === 'peer-join'); // no fake "joined" toast
+  a2.close();
+  b.close();
+});
+
+test('second session with the same uid replaces the first silently', async () => {
+  const uid = 'ffee00112233aabb';
+  const a1 = await client();
+  const b = await client();
+  a1.j({ t: 'join', room: 'takeover-room', name: 'Ana', uid });
+  await a1.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'takeover-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+  await b.next((m) => m.t === 'roster' && m.members.length === 2);
+
+  const a2 = await client();
+  const closed = new Promise((res) => a1.on('close', res));
+  a2.j({ t: 'join', room: 'takeover-room', name: 'Ana', uid });
+  const j2 = await a2.next((m) => m.t === 'joined');
+  assert.equal(j2.back, true);
+  // the losing session is told to stand down (so it won't reconnect-fight)…
+  const replaced = await a1.next((m) => m.t === 'error' && m.code === 'replaced');
+  assert.ok(replaced.message);
+  await closed; // …and then terminated server-side
+  const roster = await b.next(
+    (m) => m.t === 'roster' && m.members.filter((x) => x.name === 'Ana').length === 1
+  );
+  assert.equal(roster.members.length, 2); // never two Anas
+  a2.close();
+  b.close();
+});
+
+test('explicit leave says goodbye immediately — no away ghost', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'bye-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'bye-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+  await b.next((m) => m.t === 'roster' && m.members.length === 2);
+
+  a.j({ t: 'leave' });
+  const pl = await b.next((m) => m.t === 'peer-leave');
+  assert.equal(pl.name, 'Alice');
   const roster = await b.next((m) => m.t === 'roster' && m.members.length === 1);
   assert.equal(roster.members[0].name, 'Bob');
+  a.close();
+  b.close();
+});
+
+test('away flag shows riders as backgrounded in the roster', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'moon-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'moon-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  a.j({ t: 'away', on: true });
+  await b.next(
+    (m) => m.t === 'roster' && m.members.some((x) => x.name === 'Alice' && x.p === 'bg')
+  );
+  await new Promise((r) => setTimeout(r, 1100)); // outlive the 1 s rate limit
+  a.j({ t: 'away', on: false });
+  await b.next(
+    (m) => m.t === 'roster' && m.members.some((x) => x.name === 'Alice' && x.p === 'on')
+  );
+  a.close();
+  b.close();
+});
+
+test('an emptied room keeps its limit and photos within the grace window', async () => {
+  const MARK = 0xfffffffe;
+  const a = await client();
+  a.j({ t: 'join', room: 'grace-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  a.j({ t: 'limit', kmh: 80 });
+  await a.next((m) => m.t === 'limit' && m.kmh === 80);
+  const photo = Buffer.alloc(4 + 500);
+  photo.writeUInt32LE(MARK, 0);
+  photo.fill(0x42, 4);
+  a.send(photo);
+  await a.next((m) => m.t === 'photo');
+  a.terminate(); // everyone gone — chai stop
+
+  await new Promise((r) => setTimeout(r, 400)); // well inside ROOM_TTL_MS
+  const c = await client();
+  c.j({ t: 'join', room: 'grace-room', name: 'Cara' });
+  await c.next((m) => m.t === 'joined');
+  const roster = await c.next((m) => m.t === 'roster');
+  assert.equal(roster.limit, 80); // the trip remembered
+  assert.deepEqual(roster.photos, [1]);
+  assert.equal(roster.photoMeta[0].name, 'Alice');
+  const bin = await c.next((m) => m.binary && m.data.readUInt32LE(0) === MARK);
+  assert.equal(bin.data.readUInt32LE(4), 1);
+  c.close();
+});
+
+test('photo owner can delete it; others cannot', async () => {
+  const MARK = 0xfffffffe;
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'del-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'del-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  const photo = Buffer.alloc(4 + 500);
+  photo.writeUInt32LE(MARK, 0);
+  photo.fill(0x42, 4);
+  a.send(photo);
+  const info = await b.next((m) => m.t === 'photo');
+  assert.equal(info.metas[0].name, 'Alice');
+  const id = info.ids[0];
+
+  b.j({ t: 'photo-del', id }); // not the owner -> ignored
+  await a.expectNone((m) => m.t === 'photo' && m.del);
+  a.j({ t: 'photo-del', id });
+  const del = await b.next((m) => m.t === 'photo' && m.del);
+  assert.equal(del.del.id, id);
+  assert.deepEqual(del.ids, []);
+  a.close();
   b.close();
 });
 
@@ -469,7 +639,7 @@ test('location relays only while channel mapmode is on', async () => {
   b.close();
 });
 
-test('photos: store, broadcast, cap of three, late-joiner delivery', async () => {
+test('photos: store, broadcast, late-joiner delivery', async () => {
   const MARK = 0xfffffffe;
   const a = await client();
   const b = await client();

@@ -209,6 +209,11 @@ select.pill {
   border-color: var(--ok);
   box-shadow: 0 0 0 3px var(--ok-soft), var(--shadow-sm);
 }
+.member.away { opacity: 0.55; }
+.maway {
+  font-size: 0.72rem; font-weight: 700; color: var(--dim);
+  white-space: nowrap;
+}
 .avatar {
   width: 30px; height: 30px; border-radius: 50%;
   display: grid; place-items: center;
@@ -255,15 +260,36 @@ select.pill {
   display: flex; gap: 10px; margin-top: 14px; overflow-x: auto;
   padding-bottom: 2px;
 }
-.photoStrip img {
-  width: 78px; height: 78px; object-fit: cover; flex: none;
-  border-radius: 14px; border: 1px solid var(--line); cursor: pointer;
+.ph {
+  position: relative; flex: none; padding: 0; border: 0; background: none;
+  cursor: pointer; border-radius: 14px;
+}
+.ph img {
+  display: block; width: 78px; height: 78px; object-fit: cover;
+  border-radius: 14px; border: 1px solid var(--line);
   box-shadow: var(--shadow-sm);
 }
+.ph.localOnly img { border-style: dashed; opacity: 0.9; }
+.phCap {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 10px 6px 4px; border-radius: 0 0 14px 14px;
+  background: linear-gradient(transparent, rgba(10, 14, 22, 0.72));
+  color: #fff; font-size: 0.62rem; font-weight: 700; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 #photoView { place-items: center; }
+.photoFig {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  max-width: 94vw;
+}
 #photoView img {
-  max-width: 94vw; max-height: 86vh; border-radius: 14px;
+  max-width: 94vw; max-height: 78vh; border-radius: 14px;
   box-shadow: var(--shadow-lg);
+}
+.photoCap {
+  display: flex; align-items: center; gap: 12px;
+  color: #fff; font-size: 0.85rem; font-weight: 600;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
 }
 
 /* --------------------------------------------------------------- stage */

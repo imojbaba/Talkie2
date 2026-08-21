@@ -6,9 +6,12 @@
  * floor control (one speaker per channel at a time).
  *
  * Protocol (client <-> server), JSON text frames for control:
- *   -> {t:'join', room, name}
- *   <- {t:'joined', id, room}
- *   <- {t:'roster', members:[{id,name}], speaker:{id,name,tx}|null}
+ *   -> {t:'join', room, name, uid?}   (uid: private, stable per phone)
+ *   <- {t:'joined', id, room, ver, back}
+ *   <- {t:'roster', members:[{id,name,status,p|away,for}], speaker, photoMeta, ...}
+ *   -> {t:'leave'}                  (explicit exit; a dropped socket goes "away")
+ *   -> {t:'away', on}               (app backgrounded, still connected)
+ *   -> {t:'photo-del', id}          (owner removes a shared photo)
  *   <- {t:'peer-join'|'peer-leave', id, name}
  *   -> {t:'ptt-start', tx}         (request the floor)
  *   <- {t:'granted', tx}           (to requester)
@@ -30,9 +33,22 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const SERVER_VER = 10;
+const SERVER_VER = 11;
 const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE) || 16;
 const SPEAKER_TIMEOUT_MS = Number(process.env.SPEAKER_TIMEOUT_MS) || 5000;
+// Trip memory: a channel survives everyone dropping (chai stop, dead zone),
+// and riders who vanish without tapping Leave linger as "away" for a while
+// instead of disappearing — their status comes back with them.
+const ROOM_TTL_MS = Number(process.env.ROOM_TTL_MS) || 6 * 60 * 60 * 1000;
+const GHOST_TTL_MS = Number(process.env.GHOST_TTL_MS) || 15 * 60 * 1000;
+const PHOTO_TTL_MS = Number(process.env.PHOTO_TTL_MS) || 24 * 60 * 60 * 1000;
+const STATUS_TTL_MS = Number(process.env.STATUS_TTL_MS) || 90 * 60 * 1000;
+const PHOTO_KEEP = Number(process.env.PHOTO_KEEP) || 8;
+const SWEEP_MS = Number(process.env.SWEEP_MS) || 1000;
+// Content ids start from the wall clock so a restarted server can never hand
+// out an id a phone already cached for a different photo or clip.
+const SEQ_BASE =
+  process.env.SEQ_BASE != null ? Number(process.env.SEQ_BASE) : Date.now() % 0x40000000;
 const MAX_BINARY_BYTES = 8 * 1024;
 const MAX_TEXT_BYTES = 2 * 1024;
 // Raw 16 kHz / 16-bit mono is ~32 KB/s; the burst allowance lets a client
@@ -90,10 +106,25 @@ function pollCounts(room) {
   return counts;
 }
 
+function photoMetas(room) {
+  return room.photos.map((p) => ({ id: p.id, by: p.by.id, name: p.by.name, at: p.at }));
+}
+
 function rosterOf(room) {
+  const now = Date.now();
   return {
     t: 'roster',
-    members: [...room.clients].map((c) => ({ id: c.id, name: c.name, status: c.status || '' })),
+    members: [...room.clients]
+      .map((c) => ({ id: c.id, name: c.name, status: c.status || '', p: c.bg ? 'bg' : 'on' }))
+      .concat(
+        [...room.ghosts.values()].map((g) => ({
+          id: g.id,
+          name: g.name,
+          status: g.status || '',
+          away: true,
+          for: Math.max(0, Math.round((now - g.leftAt) / 1000)),
+        }))
+      ),
     speaker: room.speaker
       ? { id: room.speaker.id, name: room.speaker.name, tx: room.tx }
       : null,
@@ -103,7 +134,8 @@ function rosterOf(room) {
     poll: room.poll
       ? { q: room.poll.q, a: room.poll.a, b: room.poll.b, by: room.poll.by, counts: pollCounts(room) }
       : null,
-    photos: room.photos.map((p) => p.id),
+    photos: room.photos.map((p) => p.id), // kept for older clients; new ones read photoMeta
+    photoMeta: photoMetas(room),
   };
 }
 
@@ -122,16 +154,31 @@ function releaseFloor(room, reason) {
   broadcast(room, ended, null);
 }
 
-function leaveRoom(ws) {
+function leaveRoom(ws, opts = {}) {
   const room = ws.room;
   if (!room) return;
   ws.room = null;
   room.clients.delete(ws);
   if (room.speaker === ws) releaseFloor(room, 'left');
-  if (room.clients.size === 0) {
-    rooms.delete(room.code);
+  if (opts.ghost) {
+    // Connection dropped without an explicit Leave: keep the rider as "away"
+    // (status intact) so a screen-lock or dead zone doesn't erase them.
+    room.ghosts.set(ws.id, {
+      id: ws.id,
+      name: ws.name,
+      status: ws.status || '',
+      statusAt: ws.statusAt || 0,
+      leftAt: Date.now(),
+    });
   } else {
-    broadcast(room, { t: 'peer-leave', id: ws.id, name: ws.name }, null);
+    room.ghosts.delete(ws.id);
+  }
+  if (room.clients.size === 0) {
+    // The trip survives everyone dropping; the sweeper reclaims it after
+    // ROOM_TTL_MS so photos/limit/clips are still there after a long stop.
+    room.emptyAt = Date.now();
+  } else if (!opts.silent) {
+    if (!opts.ghost) broadcast(room, { t: 'peer-leave', id: ws.id, name: ws.name }, null);
     broadcast(room, rosterOf(room), null);
   }
 }
@@ -147,25 +194,54 @@ function onControl(ws, msg) {
           message: 'Channel word must be 2–24 letters, numbers or dashes.',
         });
       }
-      leaveRoom(ws);
+      leaveRoom(ws); // switching channels is an explicit exit from the old one
+      // A private per-phone uid maps to a stable public id: the same person
+      // reconnecting is the same member (status, votes, photo ownership all
+      // survive). Only the hash is visible to the room, so it can't be spoofed.
+      if (typeof msg.uid === 'string' && /^[a-f0-9]{8,64}$/.test(msg.uid)) {
+        ws.id = crypto
+          .createHash('sha256')
+          .update('talkie1:' + msg.uid)
+          .digest('hex')
+          .slice(0, 6);
+      }
       let room = rooms.get(code);
       if (!room) {
         room = {
           code,
           clients: new Set(),
+          ghosts: new Map(),
+          emptyAt: 0,
           speaker: null,
           tx: 0,
           lastAudio: 0,
           limitKmh: 60,
           roastSeq: 0,
           clips: [],
-          clipSeq: 0,
+          clipSeq: SEQ_BASE,
           mapOn: false,
           poll: null,
           photos: [],
-          photoSeq: 0,
+          photoSeq: SEQ_BASE,
         };
         rooms.set(code, room);
+      }
+      // Same person joining again (refresh, network flap): silently replace
+      // the lingering session instead of showing a ghost twin in the roster.
+      let back = false;
+      for (const c of [...room.clients]) {
+        if (c !== ws && c.id === ws.id) {
+          // Tell the losing session to stand down, or two open tabs would
+          // steal the identity back and forth forever.
+          send(c, {
+            t: 'error',
+            code: 'replaced',
+            message: 'You joined from another tab or device — this one stepped aside.',
+          });
+          leaveRoom(c, { silent: true });
+          try { c.terminate(); } catch {}
+          back = true;
+        }
       }
       if (room.clients.size >= MAX_ROOM_SIZE) {
         return send(ws, {
@@ -175,10 +251,20 @@ function onControl(ws, msg) {
         });
       }
       ws.name = normalizeName(msg.name, 'Guest-' + ws.id.slice(0, 2));
+      const ghost = room.ghosts.get(ws.id);
+      if (ghost) {
+        room.ghosts.delete(ws.id);
+        if (ghost.status && !ws.status) {
+          ws.status = ghost.status;
+          ws.statusAt = ghost.statusAt;
+        }
+        back = true;
+      }
+      room.emptyAt = 0;
       ws.room = room;
       room.clients.add(ws);
-      send(ws, { t: 'joined', id: ws.id, room: code, ver: SERVER_VER });
-      broadcast(room, { t: 'peer-join', id: ws.id, name: ws.name }, ws);
+      send(ws, { t: 'joined', id: ws.id, room: code, ver: SERVER_VER, back });
+      if (!back) broadcast(room, { t: 'peer-join', id: ws.id, name: ws.name }, ws);
       broadcast(room, rosterOf(room), null);
       for (const c of room.clips) {
         if (ws.readyState === ws.OPEN) ws.send(c.buf, { binary: true });
@@ -209,6 +295,45 @@ function onControl(ws, msg) {
     case 'ptt-end': {
       const room = ws.room;
       if (room && room.speaker === ws) releaseFloor(room, 'ended');
+      break;
+    }
+    case 'leave': {
+      // Explicit exit (the Leave button): a real goodbye, not an "away" ghost.
+      ws.explicitLeave = true;
+      leaveRoom(ws);
+      break;
+    }
+    case 'away': {
+      // Screen off / app backgrounded but still connected: 🌙 in the roster.
+      const room = ws.room;
+      if (!room) return;
+      const now = Date.now();
+      if (now - (ws.lastAwayAt || 0) < 1000) return;
+      ws.lastAwayAt = now;
+      const bg = !!msg.on;
+      if (bg === !!ws.bg) return;
+      ws.bg = bg;
+      broadcast(room, rosterOf(room), null);
+      break;
+    }
+    case 'photo-del': {
+      // Only the person who shared a photo can remove it from the channel.
+      const room = ws.room;
+      if (!room) return;
+      const id = Number(msg.id);
+      const i = room.photos.findIndex((p) => p.id === id);
+      if (i < 0 || room.photos[i].by.id !== ws.id) return;
+      room.photos.splice(i, 1);
+      broadcast(
+        room,
+        {
+          t: 'photo',
+          ids: room.photos.map((p) => p.id),
+          metas: photoMetas(room),
+          del: { id, by: { id: ws.id, name: ws.name } },
+        },
+        null
+      );
       break;
     }
     case 'limit': {
@@ -319,6 +444,7 @@ function onControl(ws, msg) {
       if (now - (ws.lastStatusAt || 0) < 2000) return;
       ws.lastStatusAt = now;
       ws.status = text;
+      ws.statusAt = now; // statuses fade out on their own after STATUS_TTL_MS
       broadcast(room, { t: 'status', id: ws.id, name: ws.name, text }, null);
       broadcast(room, rosterOf(room), null);
       break;
@@ -391,8 +517,8 @@ function onAudio(ws, data) {
     buf.writeUInt32LE(PHOTO_MARK, 0);
     buf.writeUInt32LE(id, 4);
     data.copy(buf, 8, 4); // jpeg payload after [mark][photoId]
-    room.photos.push({ id, buf });
-    if (room.photos.length > 3) room.photos.shift();
+    room.photos.push({ id, buf, by: { id: ws.id, name: ws.name }, at: now });
+    if (room.photos.length > PHOTO_KEEP) room.photos.shift();
     for (const c of room.clients) {
       if (c !== ws && c.readyState === c.OPEN && c.bufferedAmount < 3_000_000) {
         c.send(buf, { binary: true });
@@ -400,7 +526,12 @@ function onAudio(ws, data) {
     }
     broadcast(
       room,
-      { t: 'photo', by: { id: ws.id, name: ws.name }, ids: room.photos.map((p) => p.id) },
+      {
+        t: 'photo',
+        by: { id: ws.id, name: ws.name },
+        ids: room.photos.map((p) => p.id),
+        metas: photoMetas(room),
+      },
       null
     );
     return;
@@ -521,7 +652,7 @@ wss.on('connection', (ws) => {
   initClient(ws);
   ws.on('pong', () => (ws.isAlive = true));
   ws.on('error', () => {});
-  ws.on('close', () => leaveRoom(ws));
+  ws.on('close', () => leaveRoom(ws, { ghost: !ws.explicitLeave }));
   ws.on('message', (data, isBinary) => handleMessage(ws, data, isBinary));
 });
 
@@ -545,8 +676,16 @@ function makePollClient(token) {
       const d = bin ? Buffer.from(data) : Buffer.from(String(data), 'utf8');
       this.outbox.push({ bin, d });
       this.outboxBytes += d.length;
-      while (this.outboxBytes > 2_000_000 && this.outbox.length) {
-        this.outboxBytes -= this.outbox.shift().d.length;
+      // Overflow drops the oldest *binary* frames only — control JSON
+      // (joined/roster) must survive, or the join backfill can eat the join.
+      let i = 0;
+      while (this.outboxBytes > 6_000_000 && i < this.outbox.length) {
+        if (this.outbox[i].bin) {
+          this.outboxBytes -= this.outbox[i].d.length;
+          this.outbox.splice(i, 1);
+        } else {
+          i++;
+        }
       }
       if (this.waiter) {
         const w = this.waiter;
@@ -672,7 +811,8 @@ const pollSweeper = setInterval(() => {
   for (const [token, c] of pollSessions) {
     if (c.readyState !== 1 || now - c.lastSeen > 60000) {
       c.readyState = 3;
-      leaveRoom(c);
+      // An idle-reaped poll session is a dropped phone, not a goodbye.
+      leaveRoom(c, { ghost: !c.explicitLeave });
       pollSessions.delete(token);
     }
   }
@@ -681,13 +821,39 @@ pollSweeper.unref();
 
 const sweeper = setInterval(() => {
   const now = Date.now();
-  for (const room of rooms.values()) {
+  for (const [code, room] of rooms) {
     if (room.speaker && now - room.lastAudio > SPEAKER_TIMEOUT_MS) {
       releaseFloor(room, 'timeout');
     }
     if (room.poll && now - room.poll.at > 180000) endPoll(room);
+    let rosterDirty = false;
+    for (const [id, g] of room.ghosts) {
+      if (now - g.leftAt > GHOST_TTL_MS) {
+        room.ghosts.delete(id); // away long enough: quietly drop off the roster
+        rosterDirty = true;
+      }
+    }
+    for (const c of room.clients) {
+      if (c.status && now - (c.statusAt || 0) > STATUS_TTL_MS) {
+        c.status = ''; // "chai break" three hours later is just noise
+        rosterDirty = true;
+      }
+    }
+    const nPhotos = room.photos.length;
+    room.photos = room.photos.filter((p) => now - p.at <= PHOTO_TTL_MS);
+    if (room.photos.length !== nPhotos && room.clients.size) {
+      broadcast(
+        room,
+        { t: 'photo', ids: room.photos.map((p) => p.id), metas: photoMetas(room) },
+        null
+      );
+    }
+    if (rosterDirty && room.clients.size) broadcast(room, rosterOf(room), null);
+    if (!room.clients.size && room.emptyAt && now - room.emptyAt > ROOM_TTL_MS) {
+      rooms.delete(code);
+    }
   }
-}, 1000);
+}, SWEEP_MS);
 
 const heartbeat = setInterval(() => {
   for (const ws of wss.clients) {

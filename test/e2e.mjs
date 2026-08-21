@@ -175,18 +175,87 @@ try {
   await alice.waitForFunction(() => window.__talkie.talk === 'idle', null, { timeout: 5000 });
   check('auto-resume after the call ends', true);
 
-  // Auto-reconnect: kill Bob's socket server-side, client must rejoin alone.
+  // Auto-reconnect: kill Bob's socket server-side, client must rejoin alone —
+  // as the SAME member (stable uid identity), showing 🌙 away in the interim.
   const bobId = await bob.evaluate(() => window.__talkie.myId);
   for (const c of wss.clients) if (c.id === bobId) c.terminate();
-  await bob.waitForFunction(
-    (old) => window.__talkie.joined && window.__talkie.myId && window.__talkie.myId !== old,
-    bobId,
+  await alice.waitForFunction(
+    () => window.__talkie.members.some((m) => m.away),
+    null,
+    { timeout: 10000 }
+  );
+  await alice.waitForFunction(
+    () =>
+      window.__talkie.members.length === 2 &&
+      window.__talkie.members.every((m) => !m.away),
+    null,
     { timeout: 12000 }
   );
-  await bob.waitForFunction(() => window.__talkie.members.length === 2, null, {
-    timeout: 10000,
-  });
+  const bobId2 = await bob.evaluate(() => window.__talkie.myId);
+  check(
+    'auto-reconnect: away while gone, same identity on return',
+    bobId2 === bobId,
+    `${bobId} -> ${bobId2}`
+  );
+  await bob.waitForFunction(
+    () => window.__talkie.joined && window.__talkie.members.length === 2,
+    null,
+    { timeout: 10000 }
+  );
   check('auto-reconnect + rejoin after dropped socket', true);
+
+  // 🌙 Backgrounding the app shows as away to the others, and clears again.
+  await bob.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await alice.waitForFunction(
+    () => window.__talkie.members.some((m) => m.p === 'bg'),
+    null,
+    { timeout: 8000 }
+  );
+  check('backgrounded rider shows 🌙 to the channel', true);
+  await bob.waitForTimeout(1200); // outlive the server's 1 s away rate limit
+  await bob.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await alice.waitForFunction(
+    () => window.__talkie.members.every((m) => m.p !== 'bg'),
+    null,
+    { timeout: 8000 }
+  );
+  check('foregrounding clears the 🌙', true);
+
+  // 📸 Photo share: sender + timestamp meta on every phone, owner can delete.
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  await alice.setInputFiles('#photoInput', {
+    name: 'trip.png',
+    mimeType: 'image/png',
+    buffer: png,
+  });
+  await bob.waitForFunction(() => window.__talkie.photos.size === 1, null, { timeout: 10000 });
+  await alice.waitForFunction(() => window.__talkie.photos.size === 1, null, { timeout: 10000 });
+  const pmeta = await bob.evaluate(() => [...window.__talkie.photoMeta.values()][0]);
+  check(
+    'photo lands with sender + timestamp meta',
+    !!pmeta && pmeta.name === 'Alice' && pmeta.at > 0,
+    JSON.stringify(pmeta || null)
+  );
+  await alice.click('.photoStrip .ph');
+  await alice.waitForFunction(
+    () => !document.querySelector('#photoDel').hidden,
+    null,
+    { timeout: 5000 }
+  );
+  await alice.click('#photoDel'); // arms ("Sure?")
+  await alice.click('#photoDel'); // confirms
+  await bob.waitForFunction(() => window.__talkie.photos.size === 0, null, { timeout: 8000 });
+  await alice.waitForFunction(() => window.__talkie.photos.size === 0, null, { timeout: 8000 });
+  check('owner delete removes the photo for everyone', true);
 
   // Mic denied on first ask -> user stays in listen-only, then the PTT
   // button itself re-requests the mic and recovers.

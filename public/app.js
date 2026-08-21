@@ -36,6 +36,8 @@
     photoStrip: $('#photoStrip'),
     photoView: $('#photoView'),
     photoImg: $('#photoImg'),
+    photoCapText: $('#photoCapText'),
+    photoDel: $('#photoDel'),
     limitBtn: $('#limitBtn'),
     muteBtn: $('#muteBtn'),
     leaveBtn: $('#leaveBtn'),
@@ -69,7 +71,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.8';
+  const APP_VERSION = '2.9';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -128,6 +130,8 @@
     lastLocSent: 0,
     poll: null, // {q, a, b, by, counts, myVote}
     photos: new Map(), // photo id -> object URL
+    photoMeta: new Map(), // photo id -> {by, name, at, local} (local = only on this phone)
+    photoBlobs: new Map(), // photo id -> Blob, so the cache can be (re)written with meta
     pendingPhoto: null, // my just-uploaded JPEG blob, adopted on server ack
     held: false, // another app owns the phone's audio (call/camera/background)
     hold: { mic: false, ctx: false, hidden: false },
@@ -143,6 +147,84 @@
     },
     set(k, v) {
       try { localStorage.setItem(k, v); } catch {}
+    },
+  };
+
+  // Private per-phone identity: the server hashes it into a stable public id,
+  // so rejoining after a drop makes you the same member, not a stranger.
+  function getUid() {
+    let u = storage.get('talkie.uid');
+    if (!/^[a-f0-9]{16}$/.test(u)) {
+      try {
+        u = [...crypto.getRandomValues(new Uint8Array(8))]
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+      } catch {
+        u = (Date.now().toString(16) + Math.random().toString(16).slice(2)).slice(0, 16);
+      }
+      storage.set('talkie.uid', u);
+    }
+    return u;
+  }
+
+  function fmtAgo(sec) {
+    if (!(sec >= 0)) return '';
+    if (sec < 60) return 'now';
+    if (sec < 3600) return Math.round(sec / 60) + 'm';
+    if (sec < 86400) return Math.round(sec / 3600) + 'h';
+    return Math.round(sec / 86400) + 'd';
+  }
+
+  // IndexedDB trip album: shared photos also live on this phone for 48 h, so
+  // a refresh, a server hiccup, or the shared strip rotating can't eat them.
+  const idb = {
+    _p: null,
+    open() {
+      if (this._p) return this._p;
+      this._p = new Promise((resolve) => {
+        try {
+          const rq = indexedDB.open('talkie', 1);
+          rq.onupgradeneeded = () => {
+            const st = rq.result.createObjectStore('photos', { keyPath: 'key' });
+            st.createIndex('room', 'room');
+          };
+          rq.onsuccess = () => resolve(rq.result);
+          rq.onerror = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      });
+      return this._p;
+    },
+    async tx(mode, fn) {
+      const db = await this.open();
+      if (!db) return null;
+      return new Promise((resolve) => {
+        try {
+          const t = db.transaction('photos', mode);
+          const rq = fn(t.objectStore('photos'));
+          t.oncomplete = () => resolve(rq && 'result' in rq ? rq.result : true);
+          t.onerror = () => resolve(null);
+          t.onabort = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      });
+    },
+    put(rec) { return this.tx('readwrite', (s) => s.put(rec)); },
+    del(key) { return this.tx('readwrite', (s) => s.delete(key)); },
+    byRoom(room) { return this.tx('readonly', (s) => s.index('room').getAll(room)); },
+    prune(beforeMs) {
+      return this.tx('readwrite', (s) => {
+        const rq = s.openCursor();
+        rq.onsuccess = () => {
+          const cur = rq.result;
+          if (!cur) return;
+          if ((cur.value.at || 0) < beforeMs) cur.delete();
+          cur.continue();
+        };
+        return null;
+      });
     },
   };
 
@@ -240,7 +322,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=28'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=29'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -780,6 +862,7 @@
         if (!state.photos.has(id)) {
           const blob = new Blob([buf.slice(8)], { type: 'image/jpeg' });
           state.photos.set(id, URL.createObjectURL(blob));
+          cachePhoto(id, blob); // meta follows in the {t:'photo'} broadcast
           renderPhotos();
         }
       }
@@ -984,7 +1067,7 @@
       if (state.transport === 'ws') state.wsFails = 0;
       else state.pollFails = 0;
       state.lastMsgAt = Date.now();
-      ws.send(JSON.stringify({ t: 'join', room: state.code, name: state.name }));
+      ws.send(JSON.stringify({ t: 'join', room: state.code, name: state.name, uid: getUid() }));
     };
 
     ws.onmessage = (ev) => {
@@ -1071,6 +1154,8 @@
         showChannel();
         keepAwake();
         if (state.limitKmh) startGeo();
+        if (msg.back) toast('👋 Back on the trip');
+        loadCachedPhotos(); // this phone's trip album appears instantly
         break;
       }
       case 'roster': {
@@ -1092,12 +1177,7 @@
           renderPoll();
         }
         if (Array.isArray(msg.photos)) {
-          for (const id of [...state.photos.keys()]) {
-            if (!msg.photos.includes(id)) {
-              try { URL.revokeObjectURL(state.photos.get(id)); } catch {}
-              state.photos.delete(id);
-            }
-          }
+          reconcilePhotos(msg.photos, msg.photoMeta);
           renderPhotos();
         }
         if (Array.isArray(msg.clips)) {
@@ -1197,6 +1277,15 @@
         break;
       }
       case 'error': {
+        if (msg.code === 'replaced' && state.joined) {
+          // Another tab/device took over this identity: stop reconnecting.
+          leave();
+          els.joinErr.classList.remove('info');
+          els.joinErr.textContent =
+            msg.message || 'You joined from another tab — this one stepped aside.';
+          els.joinErr.hidden = false;
+          break;
+        }
         state.joining = false;
         if (!state.joined) {
           state.closing = true;
@@ -1276,24 +1365,27 @@
       }
       case 'photo': {
         if (Array.isArray(msg.ids)) {
-          for (const id of [...state.photos.keys()]) {
-            if (!msg.ids.includes(id)) {
-              try { URL.revokeObjectURL(state.photos.get(id)); } catch {}
-              state.photos.delete(id);
-            }
-          }
+          reconcilePhotos(msg.ids, msg.metas);
+          if (msg.del) hardRemovePhoto(msg.del.id, msg.del.by);
           if (msg.by && msg.by.id === state.myId && state.pendingPhoto) {
             // The server doesn't echo the binary to the uploader; adopt ours.
             const newId = msg.ids.find((id) => !state.photos.has(id));
             if (newId != null) {
               state.photos.set(newId, URL.createObjectURL(state.pendingPhoto));
+              cachePhoto(newId, state.pendingPhoto, {
+                by: state.myId,
+                name: state.name,
+                at: Date.now(),
+              });
             }
             state.pendingPhoto = null;
             toast('📸 Photo shared with the channel');
           }
           renderPhotos();
         }
-        if (msg.by && msg.by.id !== state.myId) toast(`📸 ${msg.by.name} shared a photo`);
+        if (msg.by && msg.by.id !== state.myId && !msg.del) {
+          toast(`📸 ${msg.by.name} shared a photo`);
+        }
         break;
       }
       case 'status': {
@@ -1385,13 +1477,18 @@
     return (name || '?').trim().charAt(0).toUpperCase() || '?';
   }
 
+  function liveCount() {
+    return state.members.filter((m) => !m.away).length;
+  }
+
   function render() {
-    // roster
+    // roster — live riders first, backgrounded 🌙 next, dropped/away last
     els.roster.textContent = '';
-    for (const m of state.members) {
+    const rank = (m) => (m.away ? 2 : m.p === 'bg' ? 1 : 0);
+    for (const m of [...state.members].sort((a, b) => rank(a) - rank(b))) {
       const li = document.createElement('li');
       const speaking = state.speaker && state.speaker.id === m.id;
-      li.className = 'member' + (speaking ? ' speaking' : '');
+      li.className = 'member' + (speaking ? ' speaking' : '') + (m.away ? ' away' : '');
       const av = document.createElement('span');
       av.className = 'avatar';
       av.textContent = initial(m.name);
@@ -1399,8 +1496,23 @@
       nm.className = 'mname';
       nm.textContent = m.name + (m.id === state.myId ? ' (you)' : '');
       li.append(av, nm);
+      if (m.away) {
+        const aw = document.createElement('span');
+        aw.className = 'maway';
+        aw.textContent = '🌙 ' + (!(m.for >= 60) ? 'away' : fmtAgo(m.for));
+        aw.title = 'Connection dropped — they’re still on the trip';
+        li.append(aw);
+      } else if (m.p === 'bg' && m.id !== state.myId) {
+        const aw = document.createElement('span');
+        aw.className = 'maway';
+        aw.textContent = '🌙';
+        aw.title = 'App in background';
+        li.append(aw);
+      }
       let kmh = null;
-      if (m.id === state.myId) {
+      if (m.away) {
+        // stale numbers next to an away rider only mislead
+      } else if (m.id === state.myId) {
         if (state.speedKmh != null && state.speedKmh > 2) kmh = Math.round(state.speedKmh);
       } else {
         const s = state.speeds[m.id];
@@ -1413,7 +1525,7 @@
         sp.title = `${kmh} km/h`;
         li.append(sp);
       }
-      if (m.id !== state.myId && state.mapOn) {
+      if (m.id !== state.myId && !m.away && state.mapOn) {
         const l = state.locs[m.id];
         if (l && Date.now() - l.at < 30000 && state.lastFix) {
           const d = distM(state.lastFix, l);
@@ -1460,8 +1572,10 @@
       status = `🎧 ${state.speaker.name} is talking…`;
     } else if (!state.micOk) {
       status = state.micBusy ? 'Turning the mic on…' : '🎙 Tap the button to enable your mic';
-    } else if (state.members.length < 2) {
-      status = 'Channel clear — waiting for your friend';
+    } else if (liveCount() < 2) {
+      status = state.members.length >= 2
+        ? 'Channel clear — the others are away'
+        : 'Channel clear — waiting for your friend';
     } else {
       status = 'Channel clear — hold to talk';
     }
@@ -1553,6 +1667,7 @@
   }
 
   function leave() {
+    wsSend({ t: 'leave' }); // a real goodbye — don't linger as "away"
     state.closing = true;
     state.joined = false;
     state.joining = false;
@@ -1591,6 +1706,10 @@
       try { URL.revokeObjectURL(url); } catch {}
     }
     state.photos = new Map();
+    state.photoMeta = new Map(); // idb keeps the album for the next join
+    state.photoBlobs = new Map();
+    viewingPhoto = null;
+    els.photoView.hidden = true;
     renderPoll();
     renderPhotos();
     renderMapBtn();
@@ -1612,19 +1731,118 @@
     els.pollEndBtn.hidden = !(p.by && p.by.id === state.myId);
   }
 
+  function cachePhoto(id, blob, meta) {
+    state.photoBlobs.set(id, blob);
+    const m = state.photoMeta.get(id) || {};
+    idb.put({
+      key: state.code + ':' + id,
+      room: state.code,
+      id,
+      blob,
+      at: (meta && meta.at) || m.at || Date.now(),
+      by: (meta && meta.by) || m.by || null,
+      name: (meta && meta.name) || m.name || '',
+    });
+  }
+
+  async function loadCachedPhotos() {
+    try {
+      const rows = (await idb.byRoom(state.code)) || [];
+      let added = false;
+      for (const r of rows) {
+        if (state.photos.has(r.id) || !r.blob) continue;
+        state.photos.set(r.id, URL.createObjectURL(r.blob));
+        state.photoBlobs.set(r.id, r.blob);
+        if (!state.photoMeta.has(r.id)) {
+          // Assume "only on this phone" until the server's roster says otherwise.
+          state.photoMeta.set(r.id, { by: r.by, name: r.name, at: r.at, local: true });
+        }
+        added = true;
+      }
+      if (added) renderPhotos();
+    } catch {}
+  }
+
+  // Bring local photo state in line with the server's shared set. Photos the
+  // server no longer lists are NOT destroyed — they become "on this phone"
+  // memories; only an owner's explicit delete removes one everywhere.
+  function reconcilePhotos(ids, metas) {
+    if (Array.isArray(metas)) {
+      for (const pm of metas) {
+        state.photoMeta.set(pm.id, { by: pm.by, name: pm.name, at: pm.at, local: false });
+        if (state.photoBlobs.has(pm.id)) cachePhoto(pm.id, state.photoBlobs.get(pm.id), pm);
+      }
+    }
+    if (Array.isArray(ids)) {
+      for (const id of state.photos.keys()) {
+        if (!ids.includes(id)) {
+          const m = state.photoMeta.get(id);
+          if (m) m.local = true;
+          else state.photoMeta.set(id, { local: true, at: Date.now() });
+        }
+      }
+    }
+  }
+
+  function hardRemovePhoto(id, by) {
+    const url = state.photos.get(id);
+    if (url) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+    state.photos.delete(id);
+    state.photoMeta.delete(id);
+    state.photoBlobs.delete(id);
+    idb.del(state.code + ':' + id);
+    if (viewingPhoto === id) {
+      viewingPhoto = null;
+      els.photoView.hidden = true;
+    }
+    if (by && by.id !== state.myId) toast(`🗑 ${by.name} removed a photo`);
+  }
+
   function renderPhotos() {
-    const ids = [...state.photos.keys()].sort((a, b) => a - b);
+    const ids = [...state.photos.keys()].sort((a, b) => {
+      const ma = state.photoMeta.get(a);
+      const mb = state.photoMeta.get(b);
+      return ((ma && ma.at) || a) - ((mb && mb.at) || b);
+    });
     els.photoStrip.hidden = ids.length === 0;
     els.photoStrip.textContent = '';
     for (const id of ids) {
+      const m = state.photoMeta.get(id) || {};
+      const w = document.createElement('button');
+      w.type = 'button';
+      w.className = 'ph' + (m.local ? ' localOnly' : '');
+      w.title = m.local ? 'Only on this phone now' : 'Shared with the channel';
       const img = document.createElement('img');
       img.src = state.photos.get(id);
-      img.addEventListener('click', () => {
-        els.photoImg.src = state.photos.get(id);
-        els.photoView.hidden = false;
-      });
-      els.photoStrip.append(img);
+      img.alt = 'Trip photo' + (m.name ? ' by ' + m.name : '');
+      const cap = document.createElement('span');
+      cap.className = 'phCap';
+      const who = m.by === state.myId ? 'you' : m.name ? m.name.split(' ')[0] : '📷';
+      cap.textContent = m.at ? `${who} · ${fmtAgo((Date.now() - m.at) / 1000)}` : who;
+      w.append(img, cap);
+      w.addEventListener('click', () => openPhoto(id));
+      els.photoStrip.append(w);
     }
+  }
+
+  let viewingPhoto = null;
+  let delArmed = 0;
+  function openPhoto(id) {
+    const m = state.photoMeta.get(id) || {};
+    viewingPhoto = id;
+    els.photoImg.src = state.photos.get(id);
+    els.photoCapText.textContent =
+      `📸 ${m.by === state.myId ? 'You' : m.name || 'Trip photo'}` +
+      (m.at ? ` · ${fmtAgo((Date.now() - m.at) / 1000)}` : '') +
+      (m.local ? ' · only on this phone now' : '');
+    // Owners can delete everywhere; local-only leftovers anyone can clear.
+    els.photoDel.hidden = !(m.by === state.myId || m.local);
+    els.photoDel.textContent = '🗑 Delete';
+    els.photoDel.classList.remove('armed');
+    delArmed = 0;
+    els.photoView.hidden = false;
   }
 
   async function sendPhoto(file) {
@@ -1719,7 +1937,10 @@
   }
 
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
+    const visible = document.visibilityState === 'visible';
+    // Tell the channel we're 🌙 (or back) — info only, audio keeps flowing.
+    if (state.joined) wsSend({ t: 'away', on: !visible });
+    if (visible) {
       if (state.ctx && state.ctx.state !== 'running') {
         state.ctx.resume().catch(() => {});
       }
@@ -1797,9 +2018,12 @@
     rb.addEventListener('pointerup', recUp);
     rb.addEventListener('pointercancel', recUp);
     rb.addEventListener('contextmenu', (e) => e.preventDefault());
-    // keep roster speeds fresh (stale entries fade out)
+    // keep roster speeds + photo/away ages fresh (stale entries fade out)
     setInterval(() => {
-      if (state.joined) render();
+      if (state.joined) {
+        render();
+        renderPhotos();
+      }
     }, 5000);
     els.muteBtn.addEventListener('click', () => {
       state.muted = !state.muted;
@@ -1874,7 +2098,39 @@
       }
     });
     els.pollEndBtn.addEventListener('click', () => wsSend({ t: 'poll-end' }));
-    els.photoView.addEventListener('click', () => (els.photoView.hidden = true));
+    els.photoView.addEventListener('click', () => {
+      els.photoView.hidden = true;
+      viewingPhoto = null;
+    });
+    // Deleting a photo takes two taps, like Leave — trip photos are precious.
+    els.photoDel.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const now = Date.now();
+      if (now - delArmed < 2500) {
+        delArmed = 0;
+        const id = viewingPhoto;
+        els.photoView.hidden = true;
+        viewingPhoto = null;
+        if (id == null) return;
+        const m = state.photoMeta.get(id) || {};
+        if (m.by === state.myId && !m.local) wsSend({ t: 'photo-del', id });
+        hardRemovePhoto(id, null);
+        renderPhotos();
+        toast('🗑 Photo deleted');
+        return;
+      }
+      delArmed = now;
+      els.photoDel.textContent = 'Sure?';
+      els.photoDel.classList.add('armed');
+      setTimeout(() => {
+        if (delArmed && Date.now() - delArmed >= 2400) {
+          delArmed = 0;
+          els.photoDel.textContent = '🗑 Delete';
+          els.photoDel.classList.remove('armed');
+        }
+      }, 2600);
+    });
+    idb.prune(Date.now() - 48 * 3600 * 1000); // trip album keeps 48 h
     renderMapBtn();
     bindPtt();
 
