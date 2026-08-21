@@ -318,15 +318,17 @@
 
   function speakGaali(name) {
     try {
+      // Letters/digits only, so TTS never narrates emojis or symbols.
+      const spoken = (name || '').replace(/[^\p{L}\p{N} ]/gu, '').trim() || 'bhai';
       const u = new SpeechSynthesisUtterance();
       const hi = speechSynthesis.getVoices().find((v) => /^hi\b|^hi-/i.test(v.lang));
       if (hi) {
         u.voice = hi;
         u.lang = hi.lang;
-        u.text = `भेंचो भेंचो ${name}! धीरे चला!`;
+        u.text = `भेंचो भेंचो ${spoken}! धीरे चला!`;
       } else {
         u.lang = 'hi-IN';
-        u.text = `bhencho bhencho ${name}! dheere chala!`;
+        u.text = `bhencho bhencho ${spoken}! dheere chala!`;
       }
       u.rate = 1.05;
       u.volume = 1;
@@ -1017,7 +1019,17 @@
     bindPtt();
 
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => reg.update().catch(() => {}))
+        .catch(() => {});
+      // When a new version takes over, refresh once — but never mid-session.
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (reloaded || state.joined || state.joining) return;
+        reloaded = true;
+        location.reload();
+      });
     }
   }
 
