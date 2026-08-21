@@ -78,6 +78,7 @@
     lastDenied: null,
     geoOk: false,
     geoWatch: null,
+    geoDenied: false,
     limitKmh: 60,
     lastFix: null,
     speedKmh: null,
@@ -315,17 +316,17 @@
   // ------------------------------------------------- speed watch ("dheere chala")
   const LIMIT_STEPS = [40, 60, 80, 100, 120, 0]; // 0 = off
 
-  function speakGaali() {
+  function speakGaali(name) {
     try {
       const u = new SpeechSynthesisUtterance();
       const hi = speechSynthesis.getVoices().find((v) => /^hi\b|^hi-/i.test(v.lang));
       if (hi) {
         u.voice = hi;
         u.lang = hi.lang;
-        u.text = 'भेंचो भेंचो! धीरे चला!';
+        u.text = `भेंचो भेंचो ${name}! धीरे चला!`;
       } else {
         u.lang = 'hi-IN';
-        u.text = 'bhencho bhencho! dheere chala!';
+        u.text = `bhencho bhencho ${name}! dheere chala!`;
       }
       u.rate = 1.05;
       u.volume = 1;
@@ -344,7 +345,7 @@
       tone(392, 0.12, t + 0.16, { type: 'square', vol: 0.09 });
     }
     vibrate([90, 60, 90]);
-    setTimeout(speakGaali, 350);
+    setTimeout(() => speakGaali(name), 350);
   }
 
   function distM(a, b) {
@@ -392,6 +393,7 @@
       (err) => {
         // Transient unavailable/timeout errors happen mid-ride; keep watching.
         if (err && err.code === 1) {
+          state.geoDenied = true;
           stopGeo();
           toast('Location off — speed alerts disabled');
         }
@@ -421,16 +423,13 @@
   }
 
   function cycleLimit() {
+    if (!state.joined || !state.ws || state.ws.readyState !== 1) return;
     const i = LIMIT_STEPS.indexOf(state.limitKmh);
-    state.limitKmh = LIMIT_STEPS[(i + 1) % LIMIT_STEPS.length];
-    storage.set('talkie.limit', String(state.limitKmh));
-    renderLimit();
-    toast(
-      state.limitKmh
-        ? `Speed alerts above ${state.limitKmh} km/h`
-        : 'Speed alerts off'
-    );
-    if (state.limitKmh && state.geoWatch == null) startGeo();
+    const next = LIMIT_STEPS[(i + 1) % LIMIT_STEPS.length];
+    state.geoDenied = false; // a manual tap is a fresh chance to allow location
+    if (next && state.geoWatch == null) startGeo();
+    // The server owns the limit; everyone (incl. us) updates on its broadcast.
+    wsSend({ t: 'limit', kmh: next });
   }
 
   // ------------------------------------------------------------ transmit path
@@ -611,6 +610,10 @@
       }
       case 'roster': {
         state.members = msg.members || [];
+        if (typeof msg.limit === 'number' && msg.limit !== state.limitKmh) {
+          state.limitKmh = msg.limit;
+          renderLimit();
+        }
         const sp = msg.speaker;
         if (sp && sp.id !== state.myId) {
           if (!state.speaker || state.speaker.id !== sp.id || state.rxTx !== sp.tx) {
@@ -712,6 +715,14 @@
       case 'overspeed':
         gaali(msg.name, msg.kmh);
         break;
+      case 'limit': {
+        state.limitKmh = msg.kmh;
+        renderLimit();
+        const who = (msg.by && msg.by.name) || 'Channel';
+        toast(`🚦 ${who} set the limit: ${msg.kmh ? msg.kmh + ' km/h' : 'off'}`);
+        if (msg.kmh && state.geoWatch == null && !state.geoDenied) startGeo();
+        break;
+      }
       case 'pong':
         break;
     }
@@ -994,12 +1005,7 @@
     });
     els.leaveBtn.addEventListener('click', leave);
     els.shareBtn.addEventListener('click', share);
-    const storedLimit = storage.get('talkie.limit');
-    if (storedLimit !== '') {
-      const n = Number(storedLimit);
-      if (LIMIT_STEPS.includes(n)) state.limitKmh = n;
-    }
-    renderLimit();
+    renderLimit(); // channel-wide limit arrives from the server after joining
     els.limitBtn.addEventListener('click', cycleLimit);
     try { speechSynthesis.getVoices(); } catch {} // warm the voice list
     els.muteBtn.addEventListener('click', () => {

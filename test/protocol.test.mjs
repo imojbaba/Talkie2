@@ -200,3 +200,39 @@ test('overspeed relays to the whole room, rate-limited, validated', async () => 
   a.close();
   b.close();
 });
+
+test('channel-wide limit syncs to everyone and gates overspeed', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'limit-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  const r0 = await a.next((m) => m.t === 'roster');
+  assert.equal(r0.limit, 60); // room default
+  b.j({ t: 'join', room: 'limit-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  a.j({ t: 'limit', kmh: 80 });
+  const la = await a.next((m) => m.t === 'limit');
+  assert.equal(la.kmh, 80);
+  assert.equal(la.by.name, 'Alice');
+  const lb = await b.next((m) => m.t === 'limit');
+  assert.equal(lb.kmh, 80);
+
+  // at/below the channel limit -> server drops it
+  b.j({ t: 'overspeed', kmh: 70 });
+  await a.expectNone((m) => m.t === 'overspeed');
+  // above -> relayed
+  b.j({ t: 'overspeed', kmh: 95 });
+  const os = await a.next((m) => m.t === 'overspeed');
+  assert.equal(os.kmh, 95);
+  await b.next((m) => m.t === 'overspeed'); // consume B's own copy
+
+  // limit off -> nothing relays, no matter how fast
+  b.j({ t: 'limit', kmh: 0 });
+  await a.next((m) => m.t === 'limit' && m.kmh === 0);
+  a.j({ t: 'overspeed', kmh: 150 });
+  await b.expectNone((m) => m.t === 'overspeed');
+
+  a.close();
+  b.close();
+});

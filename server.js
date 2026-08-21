@@ -85,6 +85,7 @@ function rosterOf(room) {
     speaker: room.speaker
       ? { id: room.speaker.id, name: room.speaker.name, tx: room.tx }
       : null,
+    limit: room.limitKmh,
   };
 }
 
@@ -131,7 +132,14 @@ function onControl(ws, msg) {
       leaveRoom(ws);
       let room = rooms.get(code);
       if (!room) {
-        room = { code, clients: new Set(), speaker: null, tx: 0, lastAudio: 0 };
+        room = {
+          code,
+          clients: new Set(),
+          speaker: null,
+          tx: 0,
+          lastAudio: 0,
+          limitKmh: 60,
+        };
         rooms.set(code, room);
       }
       if (room.clients.size >= MAX_ROOM_SIZE) {
@@ -172,12 +180,26 @@ function onControl(ws, msg) {
       if (room && room.speaker === ws) releaseFloor(room, 'ended');
       break;
     }
+    case 'limit': {
+      // Channel-wide speed limit: anyone's change applies to everyone.
+      const room = ws.room;
+      if (!room) return;
+      const kmh = Math.round(Number(msg.kmh));
+      if (!(kmh === 0 || (kmh >= 20 && kmh <= 200))) return;
+      const now = Date.now();
+      if (now - (ws.lastLimitAt || 0) < 1000) return;
+      ws.lastLimitAt = now;
+      room.limitKmh = kmh;
+      broadcast(room, { t: 'limit', kmh, by: { id: ws.id, name: ws.name } }, null);
+      break;
+    }
     case 'overspeed': {
       // Speed-limit roast: client sends only a number, never coordinates.
       const room = ws.room;
       if (!room) return;
       const kmh = Math.round(Number(msg.kmh));
       if (!(kmh > 0 && kmh < 300)) return;
+      if (!room.limitKmh || kmh <= room.limitKmh) return; // channel limit is authoritative
       const now = Date.now();
       if (now - (ws.lastOverspeed || 0) < 10000) return;
       ws.lastOverspeed = now;

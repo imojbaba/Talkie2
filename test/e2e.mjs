@@ -195,9 +195,6 @@ try {
     permissions: ['geolocation'],
     geolocation: { latitude: 12.9716, longitude: 77.5946, accuracy: 10 },
   });
-  await ctxD.addInitScript(() => {
-    try { localStorage.setItem('talkie.limit', '40'); } catch {}
-  });
   const dave = await ctxD.newPage();
   dave.on('pageerror', (e) => console.log('[Dave pageerror]', e.message));
   await dave.goto(url, { waitUntil: 'load' });
@@ -205,8 +202,19 @@ try {
   await dave.fill('#code', 'e2e-speed');
   await dave.click('#joinBtn');
   await dave.waitForFunction(() => window.__talkie.joined, null, { timeout: 15000 });
+  // Cycle the channel-wide limit to 40 via the 🚦 button (server round-trip;
+  // the server accepts at most one change per second).
+  for (let i = 0; i < 6; i++) {
+    const cur = await dave.evaluate(() => window.__talkie.limitKmh);
+    if (cur === 40) break;
+    await dave.waitForTimeout(1100);
+    await dave.click('#limitBtn');
+    await dave.waitForFunction((prev) => window.__talkie.limitKmh !== prev, cur, {
+      timeout: 5000,
+    });
+  }
   const limitLabel = await dave.evaluate(() => document.querySelector('#limitBtn').textContent);
-  check('limit pill reflects stored limit', limitLabel === '🚦40', limitLabel);
+  check('channel-wide limit set to 40 via 🚦 button', limitLabel === '🚦40', limitLabel);
   await dave.waitForFunction(() => window.__talkie.lastFix != null, null, { timeout: 10000 });
   // "Drive": step the position ~44 m every 1.2 s (~130 km/h) until the roast fires.
   let lat = 12.9716;
