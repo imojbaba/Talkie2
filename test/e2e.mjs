@@ -259,6 +259,23 @@ try {
   await alice.waitForFunction(() => window.__talkie.photos.size === 0, null, { timeout: 8000 });
   check('owner delete removes the photo for everyone', true);
 
+  // 🔁 Refreshing the page/PWA drops you straight back into the channel.
+  const aliceIdBefore = await alice.evaluate(() => window.__talkie.myId);
+  await alice.reload({ waitUntil: 'load' });
+  await alice.waitForFunction(
+    () => window.__talkie && window.__talkie.joined && window.__talkie.members.length === 2,
+    null,
+    { timeout: 15000 }
+  );
+  const aliceIdAfter = await alice.evaluate(() => window.__talkie.myId);
+  check(
+    'refresh auto-rejoins the channel as the same member',
+    aliceIdAfter === aliceIdBefore,
+    `${aliceIdBefore} -> ${aliceIdAfter}`
+  );
+  await alice.waitForFunction(() => window.__talkie.micOk, null, { timeout: 10000 });
+  check('mic recovers on its own after the auto-rejoin', true);
+
   // Mic denied on first ask -> user stays in listen-only, then the PTT
   // button itself re-requests the mic and recovers.
   const ctxC = await browser.newContext();

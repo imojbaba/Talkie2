@@ -78,7 +78,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '3.2';
+  const APP_VERSION = '3.3';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -330,7 +330,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=32'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=33'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1163,8 +1163,12 @@
         keepAwake();
         if (state.limitKmh) startGeo();
         if (msg.back) toast('👋 Back on the trip');
+        // Remember the live channel so a refresh/relaunch rejoins by itself.
+        storage.set('talkie.active', state.code);
+        storage.set('talkie.activeAt', String(Date.now()));
         loadCachedPhotos(); // this phone's trip album appears instantly
         sendPushSub(); // re-register notifications (no-op unless allowed)
+        armSoundUnlock(); // gesture-less rejoins may need one tap for audio
         setTimeout(maybeOfferPush, 2500);
         break;
       }
@@ -1298,6 +1302,7 @@
         }
         state.joining = false;
         if (!state.joined) {
+          storage.set('talkie.active', ''); // don't auto-retry a failed join
           state.closing = true;
           try { state.ws && state.ws.close(); } catch {}
           showJoin();
@@ -1643,7 +1648,7 @@
     window.addEventListener('blur', () => stopTalk());
   }
 
-  async function doJoin() {
+  async function doJoin(opts = {}) {
     const code = normalizeCode(els.code.value);
     if (!code || code.length < 2) {
       els.joinErr.classList.remove('info');
@@ -1657,7 +1662,7 @@
     storage.set('talkie.name', state.name);
     storage.set('talkie.code', code);
     els.joinBtn.disabled = true;
-    els.joinBtn.textContent = 'Joining…';
+    els.joinBtn.textContent = opts.auto ? 'Rejoining…' : 'Joining…';
     try {
       // Speaking later (speed alerts) needs one speak() inside a user gesture.
       try {
@@ -1667,8 +1672,9 @@
       } catch {}
       // Notifications are part of joining: ask in this same tap (the browser
       // queues it after the mic prompt). The subscription itself is sent
-      // once the server confirms the join.
-      if (pushSupported() && Notification.permission === 'default') {
+      // once the server confirms the join. An auto-rejoin has no tap, so it
+      // must not ask — the permission from the first join carries over.
+      if (!opts.auto && pushSupported() && Notification.permission === 'default') {
         try {
           Notification.requestPermission()
             .then(() => sendPushSub())
@@ -1686,8 +1692,25 @@
     }
   }
 
+  // Browsers keep an auto-rejoined AudioContext suspended until some tap;
+  // if that happens, one tap anywhere brings the channel's sound alive.
+  function armSoundUnlock() {
+    setTimeout(() => {
+      if (!state.joined || !state.ctx || state.ctx.state === 'running') return;
+      banner('🔊 Tap anywhere once to enable sound');
+      const unlock = () => {
+        document.removeEventListener('pointerdown', unlock);
+        ensureContext().then(() => {
+          if (els.banner.textContent.includes('🔊')) banner('');
+        });
+      };
+      document.addEventListener('pointerdown', unlock);
+    }, 1800);
+  }
+
   function leave(opts = {}) {
     wsSend({ t: 'leave' }); // a real goodbye — don't linger as "away"
+    storage.set('talkie.active', ''); // no auto-rejoin after a real goodbye
     // Leaving also silences this channel, even if the connection is already
     // dead: dropping the browser subscription makes the server's stored copy
     // undeliverable, so the buzzing stops either way. (Skipped when another
@@ -2109,6 +2132,22 @@
     if (fromUrl && els.name.value) els.joinBtn.focus();
     else if (fromUrl) els.name.focus();
 
+    // A refresh or app relaunch while a channel is live rejoins by itself —
+    // stable identity makes it the same member walking back in. A different
+    // channel word in the URL (a fresh invite link) wins over the old trip,
+    // and an explicit Leave clears the flag.
+    const activeRoom = normalizeCode(storage.get('talkie.active'));
+    const activeAt = Number(storage.get('talkie.activeAt') || 0);
+    if (
+      activeRoom &&
+      els.name.value &&
+      Date.now() - activeAt < 12 * 3600 * 1000 &&
+      (!fromUrl || fromUrl === activeRoom)
+    ) {
+      els.code.value = activeRoom;
+      doJoin({ auto: true });
+    }
+
     els.dice.addEventListener('click', () => {
       els.code.value = randomWord();
     });
@@ -2147,7 +2186,7 @@
       if (e.target === els.installSheet) els.installSheet.hidden = true;
     });
     renderInstallBtn();
-    els.joinBtn.addEventListener('click', doJoin);
+    els.joinBtn.addEventListener('click', () => doJoin());
     els.code.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') doJoin();
     });
@@ -2197,11 +2236,13 @@
     rb.addEventListener('pointerup', recUp);
     rb.addEventListener('pointercancel', recUp);
     rb.addEventListener('contextmenu', (e) => e.preventDefault());
-    // keep roster speeds + photo/away ages fresh (stale entries fade out)
+    // keep roster speeds + photo/away ages fresh (stale entries fade out),
+    // and stamp the session so a refresh knows the channel is current
     setInterval(() => {
       if (state.joined) {
         render();
         renderPhotos();
+        storage.set('talkie.activeAt', String(Date.now()));
       }
     }, 5000);
     els.muteBtn.addEventListener('click', () => {
