@@ -163,6 +163,10 @@ body {
   background: var(--bg2); border-radius: 999px; padding: 2px 7px;
 }
 .mspeed.over { color: #fff; background: var(--live); font-weight: 700; }
+.mstatus {
+  font-size: 0.76rem; color: var(--accent2);
+  max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .pill.rec { border-color: var(--live); color: var(--live); animation: blink 0.8s infinite; }
 #recBtn { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .hbtns { flex-wrap: wrap; }
@@ -256,6 +260,34 @@ body {
   text-align: center; color: var(--dim); opacity: 0.45;
   font-size: 0.72rem; margin-top: 10px;
 }
+
+.sheet {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(4, 8, 16, 0.65);
+  display: grid; place-items: end center;
+}
+.sheetCard {
+  width: 100%; max-width: 430px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 20px 20px 0 0;
+  padding: 18px 18px calc(20px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 13px;
+}
+.sheetCard h3 { font-size: 1rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips button {
+  font-size: 0.88rem; color: var(--text);
+  background: var(--bg2); border: 1px solid var(--line);
+  padding: 9px 13px; border-radius: 999px; cursor: pointer;
+}
+.chips button:active { transform: scale(0.96); }
+.srow { display: flex; gap: 8px; }
+.srow input {
+  flex: 1; font-size: 0.95rem; color: var(--text);
+  background: var(--bg2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px; outline: none;
+}
+.srow input:focus { border-color: var(--accent); }
 
 .toast {
   position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom));

@@ -373,3 +373,27 @@ test('HTTP fallback transport: join and interop with ws clients', async () => {
   assert.equal(roster.members[0].name, 'Alice');
   a.close();
 });
+
+test('statuses broadcast, land in the roster, and rate-limit', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'status-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'status-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  a.j({ t: 'status', text: '☕ Chai break' });
+  const st = await b.next((m) => m.t === 'status');
+  assert.equal(st.name, 'Alice');
+  assert.equal(st.text, '☕ Chai break');
+  await b.next(
+    (m) => m.t === 'roster' && m.members.some((x) => x.status === '☕ Chai break')
+  );
+
+  // second change inside the 2 s window is dropped
+  a.j({ t: 'status', text: 'spam' });
+  await b.expectNone((m) => m.t === 'status' && m.text === 'spam');
+
+  a.close();
+  b.close();
+});

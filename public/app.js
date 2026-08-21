@@ -13,6 +13,13 @@
     connDot: $('#connDot'),
     shareBtn: $('#shareBtn'),
     recBtn: $('#recBtn'),
+    statusBtn: $('#statusBtn'),
+    sheet: $('#sheet'),
+    statusChips: $('#statusChips'),
+    statusInput: $('#statusInput'),
+    statusSend: $('#statusSend'),
+    statusClear: $('#statusClear'),
+    sheetClose: $('#sheetClose'),
     limitBtn: $('#limitBtn'),
     muteBtn: $('#muteBtn'),
     leaveBtn: $('#leaveBtn'),
@@ -45,7 +52,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.3';
+  const APP_VERSION = '2.4';
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
@@ -209,7 +216,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=23'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=24'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1149,6 +1156,26 @@
         render();
         break;
       }
+      case 'status': {
+        const m = state.members.find((x) => x.id === msg.id);
+        if (m) m.status = msg.text;
+        if (msg.text) {
+          toast(`💬 ${msg.name}: ${msg.text}`);
+          if (msg.id !== state.myId && !state.muted && !state.held && state.ctx) {
+            const t0 = state.ctx.currentTime;
+            tone(660, 0.08, t0, { vol: 0.05 });
+            tone(880, 0.1, t0 + 0.09, { vol: 0.05 });
+            setTimeout(
+              () => speakHi(`${cleanName(msg.name)}: ${msg.text}`, `${cleanName(msg.name)}: ${msg.text}`),
+              250
+            );
+          }
+        } else if (msg.id !== state.myId) {
+          toast(`💬 ${msg.name} is back`);
+        }
+        render();
+        break;
+      }
       case 'clip': {
         if (Array.isArray(msg.ids)) {
           for (const id of [...state.clips.keys()]) {
@@ -1245,6 +1272,13 @@
         sp.textContent = `${kmh}`;
         sp.title = `${kmh} km/h`;
         li.append(sp);
+      }
+      if (m.status) {
+        const st = document.createElement('span');
+        st.className = 'mstatus';
+        st.textContent = m.status;
+        st.title = m.status;
+        li.append(st);
       }
       if (speaking) {
         const dot = document.createElement('span');
@@ -1401,6 +1435,22 @@
     state.speeds = {};
   }
 
+  const STATUS_PRESETS = [
+    '🚻 Washroom break',
+    '☕ Chai break',
+    '⛽ Petrol stop',
+    '🍔 Food stop',
+    '🔧 Breakdown',
+    '🐢 Going slow',
+    '🏁 Reached',
+  ];
+
+  function sendStatus(text) {
+    wsSend({ t: 'status', text });
+    els.sheet.hidden = true;
+    els.statusInput.value = '';
+  }
+
   async function share() {
     const url = location.origin + '/' + state.code;
     const data = {
@@ -1513,6 +1563,31 @@
       els.muteBtn.setAttribute('aria-pressed', String(state.muted));
       toast(state.muted ? 'Speaker muted' : 'Speaker on');
     });
+    for (const preset of STATUS_PRESETS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = preset;
+      b.addEventListener('click', () => sendStatus(preset));
+      els.statusChips.append(b);
+    }
+    els.statusBtn.addEventListener('click', () => {
+      if (state.joined) els.sheet.hidden = false;
+    });
+    els.sheetClose.addEventListener('click', () => (els.sheet.hidden = true));
+    els.sheet.addEventListener('click', (e) => {
+      if (e.target === els.sheet) els.sheet.hidden = true;
+    });
+    els.statusSend.addEventListener('click', () => {
+      const v = els.statusInput.value.trim();
+      if (v) sendStatus(v);
+    });
+    els.statusInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const v = els.statusInput.value.trim();
+        if (v) sendStatus(v);
+      }
+    });
+    els.statusClear.addEventListener('click', () => sendStatus(''));
     bindPtt();
 
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {

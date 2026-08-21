@@ -84,7 +84,7 @@ function send(ws, obj) {
 function rosterOf(room) {
   return {
     t: 'roster',
-    members: [...room.clients].map((c) => ({ id: c.id, name: c.name })),
+    members: [...room.clients].map((c) => ({ id: c.id, name: c.name, status: c.status || '' })),
     speaker: room.speaker
       ? { id: room.speaker.id, name: room.speaker.name, tx: room.tx }
       : null,
@@ -201,6 +201,22 @@ function onControl(ws, msg) {
       ws.lastLimitAt = now;
       room.limitKmh = kmh;
       broadcast(room, { t: 'limit', kmh, by: { id: ws.id, name: ws.name } }, null);
+      break;
+    }
+    case 'status': {
+      // Short rider status ("chai break"), shown in everyone's roster.
+      const room = ws.room;
+      if (!room) return;
+      const text = String(msg.text == null ? '' : msg.text)
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .trim()
+        .slice(0, 48);
+      const now = Date.now();
+      if (now - (ws.lastStatusAt || 0) < 2000) return;
+      ws.lastStatusAt = now;
+      ws.status = text;
+      broadcast(room, { t: 'status', id: ws.id, name: ws.name, text }, null);
+      broadcast(room, rosterOf(room), null);
       break;
     }
     case 'speed': {

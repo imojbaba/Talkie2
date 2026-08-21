@@ -14,7 +14,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Talkie">
-  <link rel="stylesheet" href="/style.css?v=23">
+  <link rel="stylesheet" href="/style.css?v=24">
 </head>
 <body data-screen="join">
   <main class="app">
@@ -51,7 +51,7 @@
       </div>
 
       <p class="hint">Tell your friend the word — same word, same channel.<br>Anyone who knows the word can join, so keep it between you.</p>
-      <p class="ver">v2.3</p>
+      <p class="ver">v2.4</p>
     </section>
 
     <section id="channel" class="screen" hidden>
@@ -63,6 +63,7 @@
         <div class="hbtns">
           <button id="shareBtn" type="button" class="pill">Invite</button>
           <button id="recBtn" type="button" class="pill" title="Hold to record the channel roast">🎤</button>
+          <button id="statusBtn" type="button" class="pill" title="Post a status">💬</button>
           <button id="limitBtn" type="button" class="pill" title="Speed limit for alerts">🚦60</button>
           <button id="muteBtn" type="button" class="pill" aria-pressed="false" title="Mute incoming">🔊</button>
           <button id="leaveBtn" type="button" class="pill danger">Leave</button>
@@ -90,11 +91,25 @@
       <div id="speedLine" class="speedLine"></div>
       <div class="meterWrap" aria-hidden="true"><div id="meter"></div></div>
       <p class="kbHint">Tip: hold <kbd>Space</kbd> to talk</p>
-      <p class="ver">v2.3</p>
+      <p class="ver">v2.4</p>
     </section>
 
   </main>
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheetCard">
+      <h3>Post a status</h3>
+      <div id="statusChips" class="chips"></div>
+      <div class="srow">
+        <input id="statusInput" maxlength="48" placeholder="Custom… e.g. craving chai" enterkeyhint="send">
+        <button id="statusSend" type="button" class="pill">Post</button>
+      </div>
+      <div class="srow">
+        <button id="statusClear" type="button" class="pill">Clear my status</button>
+        <button id="sheetClose" type="button" class="pill danger">Close</button>
+      </div>
+    </div>
+  </div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=23"></script>
+  <script src="/app.js?v=24"></script>
 </body>
 </html>
