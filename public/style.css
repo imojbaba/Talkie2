@@ -289,6 +289,37 @@ body {
 }
 .srow input:focus { border-color: var(--accent); }
 
+.pollCard {
+  margin-top: 14px; padding: 13px 14px;
+  background: var(--card); border: 1px solid var(--accent);
+  border-radius: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.pollQ { font-weight: 700; font-size: 0.95rem; }
+.pollBtns { display: flex; gap: 8px; }
+.pollBtns button {
+  flex: 1; font-size: 0.9rem; color: var(--text);
+  background: var(--bg2); border: 1px solid var(--line);
+  padding: 11px 8px; border-radius: 10px; cursor: pointer;
+}
+.pollBtns button.mine { border-color: var(--accent); color: var(--accent2); font-weight: 700; }
+.photoStrip {
+  display: flex; gap: 8px; margin-top: 12px; overflow-x: auto;
+}
+.photoStrip img {
+  width: 56px; height: 56px; object-fit: cover;
+  border-radius: 10px; border: 1px solid var(--line); cursor: pointer;
+}
+#photoView { place-items: center; }
+#photoView img {
+  max-width: 94vw; max-height: 86vh; border-radius: 12px;
+  border: 1px solid var(--line);
+}
+.mdist {
+  font-size: 0.76rem; color: #7dd3fc;
+  background: var(--bg2); border-radius: 999px; padding: 2px 7px;
+}
+
 .toast {
   position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom));
   transform: translateX(-50%);

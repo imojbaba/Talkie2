@@ -30,7 +30,7 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const SERVER_VER = 9;
+const SERVER_VER = 10;
 const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE) || 16;
 const SPEAKER_TIMEOUT_MS = Number(process.env.SPEAKER_TIMEOUT_MS) || 5000;
 const MAX_BINARY_BYTES = 8 * 1024;
@@ -41,6 +41,9 @@ const AUDIO_BYTES_PER_SEC = 96 * 1024;
 const AUDIO_BURST_BYTES = 256 * 1024;
 // Recorded roast clip: up to ~5 s of 16 kHz 16-bit PCM plus its 4-byte header.
 const CLIP_MAX_BYTES = 320 * 1024;
+// Shared photos: client-compressed JPEGs, marker header 0xFFFFFFFE.
+const PHOTO_MARK = 0xfffffffe;
+const PHOTO_MAX_BYTES = 400 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -81,6 +84,12 @@ function send(ws, obj) {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
 
+function pollCounts(room) {
+  const counts = [0, 0];
+  for (const v of Object.values(room.poll ? room.poll.votes : {})) counts[v]++;
+  return counts;
+}
+
 function rosterOf(room) {
   return {
     t: 'roster',
@@ -90,6 +99,11 @@ function rosterOf(room) {
       : null,
     limit: room.limitKmh,
     clips: room.clips.map((c) => c.id),
+    mapOn: room.mapOn,
+    poll: room.poll
+      ? { q: room.poll.q, a: room.poll.a, b: room.poll.b, by: room.poll.by, counts: pollCounts(room) }
+      : null,
+    photos: room.photos.map((p) => p.id),
   };
 }
 
@@ -146,6 +160,10 @@ function onControl(ws, msg) {
           roastSeq: 0,
           clips: [],
           clipSeq: 0,
+          mapOn: false,
+          poll: null,
+          photos: [],
+          photoSeq: 0,
         };
         rooms.set(code, room);
       }
@@ -164,6 +182,9 @@ function onControl(ws, msg) {
       broadcast(room, rosterOf(room), null);
       for (const c of room.clips) {
         if (ws.readyState === ws.OPEN) ws.send(c.buf, { binary: true });
+      }
+      for (const ph of room.photos) {
+        if (ws.readyState === ws.OPEN) ws.send(ph.buf, { binary: true });
       }
       break;
     }
@@ -201,6 +222,89 @@ function onControl(ws, msg) {
       ws.lastLimitAt = now;
       room.limitKmh = kmh;
       broadcast(room, { t: 'limit', kmh, by: { id: ws.id, name: ws.name } }, null);
+      break;
+    }
+    case 'ping-all': {
+      // Attention buzz for the whole channel.
+      const room = ws.room;
+      if (!room) return;
+      const now = Date.now();
+      if (now - (ws.lastPingAll || 0) < 5000) return;
+      ws.lastPingAll = now;
+      broadcast(room, { t: 'ping-all', by: { id: ws.id, name: ws.name } }, null);
+      break;
+    }
+    case 'poll': {
+      const room = ws.room;
+      if (!room) return;
+      const clean = (v, n, d) =>
+        String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, n) || d;
+      const q = clean(msg.q, 40, '');
+      if (!q) return;
+      const now = Date.now();
+      if (now - (ws.lastPollAt || 0) < 10000) return;
+      ws.lastPollAt = now;
+      room.poll = {
+        q,
+        a: clean(msg.a, 16, 'Yes'),
+        b: clean(msg.b, 16, 'No'),
+        by: { id: ws.id, name: ws.name },
+        votes: {},
+        at: now,
+      };
+      broadcast(
+        room,
+        { t: 'poll', q: room.poll.q, a: room.poll.a, b: room.poll.b, by: room.poll.by },
+        null
+      );
+      break;
+    }
+    case 'vote': {
+      const room = ws.room;
+      if (!room || !room.poll) return;
+      const v = msg.v === 1 ? 1 : msg.v === 0 ? 0 : null;
+      if (v == null) return;
+      room.poll.votes[ws.id] = v;
+      broadcast(
+        room,
+        { t: 'votes', counts: pollCounts(room), total: room.clients.size },
+        null
+      );
+      break;
+    }
+    case 'poll-end': {
+      const room = ws.room;
+      if (!room || !room.poll) return;
+      if (room.poll.by.id !== ws.id) return;
+      endPoll(room);
+      break;
+    }
+    case 'mapmode': {
+      // Channel-wide location sharing toggle; announced to everyone.
+      const room = ws.room;
+      if (!room) return;
+      const now = Date.now();
+      if (now - (ws.lastMapAt || 0) < 2000) return;
+      ws.lastMapAt = now;
+      room.mapOn = !!msg.on;
+      broadcast(room, { t: 'mapmode', on: room.mapOn, by: { id: ws.id, name: ws.name } }, null);
+      break;
+    }
+    case 'loc': {
+      // Rider position for distance display; only while the channel opted in.
+      const room = ws.room;
+      if (!room || !room.mapOn) return;
+      const lat = Number(msg.lat);
+      const lon = Number(msg.lon);
+      if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) return;
+      const now = Date.now();
+      if (now - (ws.lastLocAt || 0) < 4000) return;
+      ws.lastLocAt = now;
+      broadcast(
+        room,
+        { t: 'loc', id: ws.id, lat: +lat.toFixed(4), lon: +lon.toFixed(4) },
+        ws
+      );
       break;
     }
     case 'status': {
@@ -257,11 +361,50 @@ function onControl(ws, msg) {
   }
 }
 
+function endPoll(room) {
+  if (!room.poll) return;
+  const p = room.poll;
+  room.poll = null;
+  broadcast(
+    room,
+    { t: 'poll-end', q: p.q, a: p.a, b: p.b, counts: (() => {
+        const counts = [0, 0];
+        for (const v of Object.values(p.votes)) counts[v]++;
+        return counts;
+      })() },
+    null
+  );
+}
+
 function onAudio(ws, data) {
   const room = ws.room;
   if (!room) return;
   // Binary messages with txId 0 are roast-clip uploads, not live audio; live
   // transmission ids are always non-zero.
+  if (data.length >= 8 && data.readUInt32LE(0) === PHOTO_MARK) {
+    if (data.length > PHOTO_MAX_BYTES + 8) return;
+    const now = Date.now();
+    if (now - (ws.lastPhotoAt || 0) < 10000) return;
+    ws.lastPhotoAt = now;
+    const id = ++room.photoSeq;
+    const buf = Buffer.alloc(data.length + 4);
+    buf.writeUInt32LE(PHOTO_MARK, 0);
+    buf.writeUInt32LE(id, 4);
+    data.copy(buf, 8, 4); // jpeg payload after [mark][photoId]
+    room.photos.push({ id, buf });
+    if (room.photos.length > 3) room.photos.shift();
+    for (const c of room.clients) {
+      if (c !== ws && c.readyState === c.OPEN && c.bufferedAmount < 3_000_000) {
+        c.send(buf, { binary: true });
+      }
+    }
+    broadcast(
+      room,
+      { t: 'photo', by: { id: ws.id, name: ws.name }, ids: room.photos.map((p) => p.id) },
+      null
+    );
+    return;
+  }
   if (data.length >= 8 && data.readUInt32LE(0) === 0) {
     if (data.length > CLIP_MAX_BYTES) return;
     const now = Date.now();
@@ -459,7 +602,7 @@ function handlePoll(req, res, pathname, query) {
   }
   c.lastSeen = Date.now();
   if (pathname === '/poll/send' && req.method === 'POST') {
-    readBody(req, res, CLIP_MAX_BYTES + 4096, (body) => {
+    readBody(req, res, PHOTO_MAX_BYTES + 8192, (body) => {
       const ct = req.headers['content-type'] || '';
       if (ct.includes('json')) {
         handleMessage(c, body, false);
@@ -469,7 +612,7 @@ function handlePoll(req, res, pathname, query) {
         while (off + 4 <= body.length) {
           const len = body.readUInt32LE(off);
           off += 4;
-          if (len === 0 || len > CLIP_MAX_BYTES || off + len > body.length) break;
+          if (len === 0 || len > PHOTO_MAX_BYTES + 8 || off + len > body.length) break;
           onAudio(c, body.subarray(off, off + len));
           off += len;
         }
@@ -542,6 +685,7 @@ const sweeper = setInterval(() => {
     if (room.speaker && now - room.lastAudio > SPEAKER_TIMEOUT_MS) {
       releaseFloor(room, 'timeout');
     }
+    if (room.poll && now - room.poll.at > 180000) endPoll(room);
   }
 }, 1000);
 

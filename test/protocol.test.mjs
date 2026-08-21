@@ -397,3 +397,105 @@ test('statuses broadcast, land in the roster, and rate-limit', async () => {
   a.close();
   b.close();
 });
+
+test('ping-all broadcasts with rate limit', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'ping-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'ping-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  a.j({ t: 'ping-all' });
+  const p = await b.next((m) => m.t === 'ping-all');
+  assert.equal(p.by.name, 'Alice');
+  await a.next((m) => m.t === 'ping-all'); // sender gets it too
+  a.j({ t: 'ping-all' }); // within 5 s -> dropped
+  await b.expectNone((m) => m.t === 'ping-all');
+  a.close();
+  b.close();
+});
+
+test('polls: create, vote, live counts, creator-only end', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'poll-room2', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'poll-room2', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  a.j({ t: 'poll', q: 'chai ya khana?', a: 'chai', b: 'khana' });
+  const pl = await b.next((m) => m.t === 'poll');
+  assert.equal(pl.q, 'chai ya khana?');
+  assert.equal(pl.by.name, 'Alice');
+  await a.next((m) => m.t === 'poll');
+
+  b.j({ t: 'vote', v: 0 });
+  const v1 = await a.next((m) => m.t === 'votes');
+  assert.deepEqual(v1.counts, [1, 0]);
+  await b.next((m) => m.t === 'votes');
+  a.j({ t: 'vote', v: 1 });
+  const v2 = await b.next((m) => m.t === 'votes');
+  assert.deepEqual(v2.counts, [1, 1]);
+  await a.next((m) => m.t === 'votes');
+
+  b.j({ t: 'poll-end' }); // not the creator -> ignored
+  await a.expectNone((m) => m.t === 'poll-end');
+  a.j({ t: 'poll-end' });
+  const end = await b.next((m) => m.t === 'poll-end');
+  assert.deepEqual(end.counts, [1, 1]);
+  a.close();
+  b.close();
+});
+
+test('location relays only while channel mapmode is on', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'map-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'map-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  a.j({ t: 'loc', lat: 12.9716, lon: 77.5946 }); // mapOn is false -> dropped
+  await b.expectNone((m) => m.t === 'loc');
+  a.j({ t: 'mapmode', on: true });
+  const mm = await b.next((m) => m.t === 'mapmode');
+  assert.equal(mm.on, true);
+  a.j({ t: 'loc', lat: 12.9716, lon: 77.5946 });
+  const loc = await b.next((m) => m.t === 'loc');
+  assert.equal(loc.lat, 12.9716);
+  await a.expectNone((m) => m.t === 'loc'); // no echo to sender
+  a.close();
+  b.close();
+});
+
+test('photos: store, broadcast, cap of three, late-joiner delivery', async () => {
+  const MARK = 0xfffffffe;
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'photo-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'photo-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  const photo = Buffer.alloc(4 + 2000);
+  photo.writeUInt32LE(MARK, 0);
+  photo.fill(0x5a, 4);
+  a.send(photo);
+  const rx = await b.next((m) => m.binary && m.data.readUInt32LE(0) === MARK);
+  assert.equal(rx.data.readUInt32LE(4), 1); // photo id
+  assert.equal(rx.data.length, photo.length + 4);
+  const info = await b.next((m) => m.t === 'photo');
+  assert.deepEqual(info.ids, [1]);
+
+  const c = await client();
+  c.j({ t: 'join', room: 'photo-room', name: 'Cara' });
+  await c.next((m) => m.t === 'joined');
+  const late = await c.next((m) => m.binary && m.data.readUInt32LE(0) === MARK);
+  assert.equal(late.data.readUInt32LE(4), 1);
+  const roster = await c.next((m) => m.t === 'roster');
+  assert.deepEqual(roster.photos, [1]);
+  a.close();
+  b.close();
+  c.close();
+});

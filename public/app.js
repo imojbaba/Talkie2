@@ -20,6 +20,22 @@
     statusSend: $('#statusSend'),
     statusClear: $('#statusClear'),
     sheetClose: $('#sheetClose'),
+    pingBtn: $('#pingBtn'),
+    mapBtn: $('#mapBtn'),
+    photoBtn: $('#photoBtn'),
+    photoInput: $('#photoInput'),
+    pollQ: $('#pollQ'),
+    pollA: $('#pollA'),
+    pollB: $('#pollB'),
+    pollStart: $('#pollStart'),
+    pollCard: $('#pollCard'),
+    pollText: $('#pollText'),
+    voteA: $('#voteA'),
+    voteB: $('#voteB'),
+    pollEndBtn: $('#pollEndBtn'),
+    photoStrip: $('#photoStrip'),
+    photoView: $('#photoView'),
+    photoImg: $('#photoImg'),
     limitBtn: $('#limitBtn'),
     muteBtn: $('#muteBtn'),
     leaveBtn: $('#leaveBtn'),
@@ -52,7 +68,8 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.4';
+  const APP_VERSION = '2.5';
+  const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
@@ -105,6 +122,11 @@
     autoUploaded: false,
     recording: false,
     recBuf: [],
+    mapOn: false,
+    locs: {}, // peer id -> {lat, lon, at}
+    lastLocSent: 0,
+    poll: null, // {q, a, b, by, counts, myVote}
+    photos: new Map(), // photo id -> object URL
     held: false, // another app owns the phone's audio (call/camera/background)
     hold: { mic: false, ctx: false, hidden: false },
     wake: null,
@@ -216,7 +238,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=24'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=25'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -573,6 +595,10 @@
       state.lastSpeedSent = now;
       wsSend({ t: 'speed', kmh: Math.round(kmh) });
     }
+    if (state.joined && state.mapOn && now - state.lastLocSent >= 5000) {
+      state.lastLocSent = now;
+      wsSend({ t: 'loc', lat: +c.latitude.toFixed(4), lon: +c.longitude.toFixed(4) });
+    }
     if (
       state.joined &&
       state.limitKmh &&
@@ -678,7 +704,7 @@
     }
     await ensureContext();
     state.talk = 'pending';
-    state.tx = ((Math.random() * 0xffffffff) >>> 0) || 1;
+    state.tx = 1 + ((Math.random() * 0xf0000000) >>> 0); // below the marker range
     state.finishTx = 0;
     state.pending = [];
     gate(true);
@@ -741,6 +767,18 @@
       if (buf.byteLength > 12) {
         const id = dv.getUint32(4, true);
         state.clips.set(id, new Int16Array(buf.slice(8)));
+      }
+      return;
+    }
+    if (tx === PHOTO_MARK) {
+      // [mark][photoId][jpeg]
+      if (buf.byteLength > 12) {
+        const id = dv.getUint32(4, true);
+        if (!state.photos.has(id)) {
+          const blob = new Blob([buf.slice(8)], { type: 'image/jpeg' });
+          state.photos.set(id, URL.createObjectURL(blob));
+          renderPhotos();
+        }
       }
       return;
     }
@@ -1038,6 +1076,27 @@
           state.limitKmh = msg.limit;
           renderLimit();
         }
+        if (typeof msg.mapOn === 'boolean' && msg.mapOn !== state.mapOn) {
+          state.mapOn = msg.mapOn;
+          renderMapBtn();
+          if (state.mapOn && state.geoWatch == null && !state.geoDenied) startGeo();
+        }
+        if (msg.poll && !state.poll) {
+          state.poll = { ...msg.poll, myVote: null };
+          renderPoll();
+        } else if (!msg.poll && state.poll) {
+          state.poll = null;
+          renderPoll();
+        }
+        if (Array.isArray(msg.photos)) {
+          for (const id of [...state.photos.keys()]) {
+            if (!msg.photos.includes(id)) {
+              try { URL.revokeObjectURL(state.photos.get(id)); } catch {}
+              state.photos.delete(id);
+            }
+          }
+          renderPhotos();
+        }
         if (Array.isArray(msg.clips)) {
           for (const id of [...state.clips.keys()]) {
             if (!msg.clips.includes(id)) state.clips.delete(id);
@@ -1156,6 +1215,75 @@
         render();
         break;
       }
+      case 'ping-all': {
+        toast(`🔔 ${msg.by.name} pinged the channel`);
+        vibrate([120, 80, 120, 80, 200]);
+        if (!state.muted && !state.held && state.ctx) {
+          const t0 = state.ctx.currentTime;
+          tone(880, 0.1, t0, { vol: 0.09 });
+          tone(880, 0.1, t0 + 0.14, { vol: 0.09 });
+          tone(1175, 0.16, t0 + 0.28, { vol: 0.09 });
+        }
+        break;
+      }
+      case 'poll': {
+        state.poll = { q: msg.q, a: msg.a, b: msg.b, by: msg.by, counts: [0, 0], myVote: null };
+        renderPoll();
+        toast(`🗳️ ${msg.by.name}: ${msg.q}`);
+        if (msg.by.id !== state.myId && !state.muted && !state.held) {
+          setTimeout(() => speakHi(`${cleanName(msg.by.name)} पूछ रहा है: ${msg.q}`, `${cleanName(msg.by.name)} asks: ${msg.q}`), 250);
+        }
+        break;
+      }
+      case 'votes': {
+        if (state.poll) {
+          state.poll.counts = msg.counts;
+          renderPoll();
+        }
+        break;
+      }
+      case 'poll-end': {
+        const win =
+          msg.counts[0] === msg.counts[1]
+            ? 'barabar barabar!'
+            : msg.counts[0] > msg.counts[1]
+              ? msg.a
+              : msg.b;
+        toast(`🗳️ Result: ${msg.a} ${msg.counts[0]} — ${msg.b} ${msg.counts[1]}`);
+        if (!state.muted && !state.held) {
+          setTimeout(() => speakHi(`पोल का नतीजा: ${win}`, `poll result: ${win}`), 250);
+        }
+        state.poll = null;
+        renderPoll();
+        break;
+      }
+      case 'mapmode': {
+        state.mapOn = !!msg.on;
+        renderMapBtn();
+        toast(`📍 ${msg.by.name} turned location sharing ${state.mapOn ? 'ON' : 'off'}`);
+        if (state.mapOn && state.geoWatch == null && !state.geoDenied) startGeo();
+        if (!state.mapOn) state.locs = {};
+        render();
+        break;
+      }
+      case 'loc': {
+        state.locs[msg.id] = { lat: msg.lat, lon: msg.lon, at: Date.now() };
+        render();
+        break;
+      }
+      case 'photo': {
+        if (Array.isArray(msg.ids)) {
+          for (const id of [...state.photos.keys()]) {
+            if (!msg.ids.includes(id)) {
+              try { URL.revokeObjectURL(state.photos.get(id)); } catch {}
+              state.photos.delete(id);
+            }
+          }
+          renderPhotos();
+        }
+        if (msg.by && msg.by.id !== state.myId) toast(`📸 ${msg.by.name} shared a photo`);
+        break;
+      }
       case 'status': {
         const m = state.members.find((x) => x.id === msg.id);
         if (m) m.status = msg.text;
@@ -1272,6 +1400,16 @@
         sp.textContent = `${kmh}`;
         sp.title = `${kmh} km/h`;
         li.append(sp);
+      }
+      if (m.id !== state.myId && state.mapOn) {
+        const l = state.locs[m.id];
+        if (l && Date.now() - l.at < 30000 && state.lastFix) {
+          const d = distM(state.lastFix, l);
+          const dsp = document.createElement('span');
+          dsp.className = 'mdist';
+          dsp.textContent = d < 1000 ? `${Math.round(d)}m` : `${(d / 1000).toFixed(1)}km`;
+          li.append(dsp);
+        }
       }
       if (m.status) {
         const st = document.createElement('span');
@@ -1433,6 +1571,76 @@
     state.pendingUpload = null;
     state.autoUploaded = false;
     state.speeds = {};
+    state.mapOn = false;
+    state.locs = {};
+    state.poll = null;
+    for (const url of state.photos.values()) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+    state.photos = new Map();
+    renderPoll();
+    renderPhotos();
+    renderMapBtn();
+  }
+
+  function renderMapBtn() {
+    els.mapBtn.textContent = `📍 Location: ${state.mapOn ? 'ON' : 'off'}`;
+  }
+
+  function renderPoll() {
+    const p = state.poll;
+    els.pollCard.hidden = !p;
+    if (!p) return;
+    els.pollText.textContent = `🗳️ ${p.by.name}: ${p.q}`;
+    els.voteA.textContent = `${p.a} · ${p.counts[0]}`;
+    els.voteB.textContent = `${p.b} · ${p.counts[1]}`;
+    els.voteA.classList.toggle('mine', p.myVote === 0);
+    els.voteB.classList.toggle('mine', p.myVote === 1);
+    els.pollEndBtn.hidden = !(p.by && p.by.id === state.myId);
+  }
+
+  function renderPhotos() {
+    const ids = [...state.photos.keys()].sort((a, b) => a - b);
+    els.photoStrip.hidden = ids.length === 0;
+    els.photoStrip.textContent = '';
+    for (const id of ids) {
+      const img = document.createElement('img');
+      img.src = state.photos.get(id);
+      img.addEventListener('click', () => {
+        els.photoImg.src = state.photos.get(id);
+        els.photoView.hidden = false;
+      });
+      els.photoStrip.append(img);
+    }
+  }
+
+  async function sendPhoto(file) {
+    if (!file || !state.joined) return;
+    toast('📸 Compressing…');
+    try {
+      const bmp = await createImageBitmap(file);
+      const scale = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(bmp.width * scale);
+      canvas.height = Math.round(bmp.height * scale);
+      canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      let blob = null;
+      for (const q of [0.7, 0.5, 0.35]) {
+        blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
+        if (blob && blob.size <= 380 * 1024) break;
+      }
+      if (!blob) throw new Error('encode failed');
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const out = new ArrayBuffer(4 + bytes.length);
+      new DataView(out).setUint32(0, PHOTO_MARK, true);
+      new Uint8Array(out, 4).set(bytes);
+      if (state.ws && state.ws.readyState === 1) {
+        state.ws.send(out);
+        toast('📸 Photo sent to the channel');
+      }
+    } catch {
+      toast('Could not read that photo — try another one');
+    }
   }
 
   const STATUS_PRESETS = [
@@ -1588,6 +1796,50 @@
       }
     });
     els.statusClear.addEventListener('click', () => sendStatus(''));
+    els.pingBtn.addEventListener('click', () => {
+      wsSend({ t: 'ping-all' });
+      els.sheet.hidden = true;
+    });
+    els.mapBtn.addEventListener('click', () => {
+      if (!state.mapOn) {
+        state.geoDenied = false;
+        if (state.geoWatch == null) startGeo();
+      }
+      wsSend({ t: 'mapmode', on: !state.mapOn });
+    });
+    els.photoBtn.addEventListener('click', () => els.photoInput.click());
+    els.photoInput.addEventListener('change', () => {
+      const f = els.photoInput.files && els.photoInput.files[0];
+      els.photoInput.value = '';
+      els.sheet.hidden = true;
+      if (f) sendPhoto(f);
+    });
+    els.pollStart.addEventListener('click', () => {
+      const q = els.pollQ.value.trim();
+      if (!q) return;
+      wsSend({ t: 'poll', q, a: els.pollA.value.trim() || 'Yes', b: els.pollB.value.trim() || 'No' });
+      els.pollQ.value = '';
+      els.pollA.value = '';
+      els.pollB.value = '';
+      els.sheet.hidden = true;
+    });
+    els.voteA.addEventListener('click', () => {
+      if (state.poll) {
+        state.poll.myVote = 0;
+        wsSend({ t: 'vote', v: 0 });
+        renderPoll();
+      }
+    });
+    els.voteB.addEventListener('click', () => {
+      if (state.poll) {
+        state.poll.myVote = 1;
+        wsSend({ t: 'vote', v: 1 });
+        renderPoll();
+      }
+    });
+    els.pollEndBtn.addEventListener('click', () => wsSend({ t: 'poll-end' }));
+    els.photoView.addEventListener('click', () => (els.photoView.hidden = true));
+    renderMapBtn();
     bindPtt();
 
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {

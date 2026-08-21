@@ -14,7 +14,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Talkie">
-  <link rel="stylesheet" href="/style.css?v=24">
+  <link rel="stylesheet" href="/style.css?v=25">
 </head>
 <body data-screen="join">
   <main class="app">
@@ -51,7 +51,7 @@
       </div>
 
       <p class="hint">Tell your friend the word — same word, same channel.<br>Anyone who knows the word can join, so keep it between you.</p>
-      <p class="ver">v2.4</p>
+      <p class="ver">v2.5</p>
     </section>
 
     <section id="channel" class="screen" hidden>
@@ -72,6 +72,16 @@
 
       <div id="banner" class="banner" hidden></div>
 
+      <div id="pollCard" class="pollCard" hidden>
+        <div id="pollText" class="pollQ"></div>
+        <div class="pollBtns">
+          <button id="voteA" type="button"></button>
+          <button id="voteB" type="button"></button>
+        </div>
+        <button id="pollEndBtn" type="button" class="pill" hidden>End poll</button>
+      </div>
+      <div id="photoStrip" class="photoStrip" hidden></div>
+
       <ul id="roster" class="roster" aria-label="People on this channel"></ul>
 
       <div id="stage" class="stage">
@@ -91,17 +101,31 @@
       <div id="speedLine" class="speedLine"></div>
       <div class="meterWrap" aria-hidden="true"><div id="meter"></div></div>
       <p class="kbHint">Tip: hold <kbd>Space</kbd> to talk</p>
-      <p class="ver">v2.4</p>
+      <p class="ver">v2.5</p>
     </section>
 
   </main>
   <div id="sheet" class="sheet" hidden>
     <div class="sheetCard">
-      <h3>Post a status</h3>
+      <h3>Trip tools</h3>
+      <div class="srow">
+        <button id="pingBtn" type="button" class="pill">🔔 Ping everyone</button>
+        <button id="mapBtn" type="button" class="pill">📍 Location: off</button>
+        <button id="photoBtn" type="button" class="pill">📸 Photo</button>
+      </div>
+      <input id="photoInput" type="file" accept="image/*" hidden>
       <div id="statusChips" class="chips"></div>
       <div class="srow">
         <input id="statusInput" maxlength="48" placeholder="Custom… e.g. craving chai" enterkeyhint="send">
         <button id="statusSend" type="button" class="pill">Post</button>
+      </div>
+      <div class="srow">
+        <input id="pollQ" maxlength="40" placeholder="Quick poll… e.g. chai ya khana?">
+      </div>
+      <div class="srow">
+        <input id="pollA" maxlength="16" placeholder="Option A (Yes)">
+        <input id="pollB" maxlength="16" placeholder="Option B (No)">
+        <button id="pollStart" type="button" class="pill">Start</button>
       </div>
       <div class="srow">
         <button id="statusClear" type="button" class="pill">Clear my status</button>
@@ -109,7 +133,8 @@
       </div>
     </div>
   </div>
+  <div id="photoView" class="sheet" hidden><img id="photoImg" alt="Shared photo"></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=24"></script>
+  <script src="/app.js?v=25"></script>
 </body>
 </html>
