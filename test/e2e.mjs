@@ -155,6 +155,26 @@ try {
   );
   check('recorded roast distributed to the channel', true);
 
+  // A phone call takes the mic: the OS mutes the track -> Talkie holds.
+  await alice.evaluate(() =>
+    window.__talkie.stream.getAudioTracks()[0].dispatchEvent(new Event('mute'))
+  );
+  await alice.waitForFunction(() => window.__talkie.held === true, null, { timeout: 5000 });
+  await alice.keyboard.down('Space');
+  await alice.waitForTimeout(400);
+  const heldTalk = await alice.evaluate(() => window.__talkie.talk);
+  await alice.keyboard.up('Space');
+  check('call hold blocks talking and playback', heldTalk === 'idle');
+  await alice.evaluate(() =>
+    window.__talkie.stream.getAudioTracks()[0].dispatchEvent(new Event('unmute'))
+  );
+  await alice.waitForFunction(() => window.__talkie.held === false, null, { timeout: 5000 });
+  await alice.keyboard.down('Space');
+  await alice.waitForFunction(() => window.__talkie.talk === 'live', null, { timeout: 8000 });
+  await alice.keyboard.up('Space');
+  await alice.waitForFunction(() => window.__talkie.talk === 'idle', null, { timeout: 5000 });
+  check('auto-resume after the call ends', true);
+
   // Auto-reconnect: kill Bob's socket server-side, client must rejoin alone.
   const bobId = await bob.evaluate(() => window.__talkie.myId);
   for (const c of wss.clients) if (c.id === bobId) c.terminate();

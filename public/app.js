@@ -45,7 +45,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '1.8';
+  const APP_VERSION = '1.9';
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
@@ -95,6 +95,8 @@
     autoUploaded: false,
     recording: false,
     recBuf: [],
+    held: false, // another app owns the phone's audio (call/camera/background)
+    hold: { mic: false, ctx: false, hidden: false },
     wake: null,
     stats: { framesTx: 0, framesRx: 0, rxEnergy: 0 },
   };
@@ -197,7 +199,12 @@
       limiter.release.value = 0.15;
       state.remoteGain.connect(limiter);
       limiter.connect(state.ctx.destination);
-      await state.ctx.audioWorklet.addModule('/worklet.js?v=18');
+      state.ctx.addEventListener('statechange', () => {
+        // iOS flags phone-call takeovers as an 'interrupted' audio session.
+        state.hold.ctx = state.ctx.state === 'interrupted';
+        updateHold();
+      });
+      await state.ctx.audioWorklet.addModule('/worklet.js?v=19');
     }
     if (state.ctx.state !== 'running') {
       try { await state.ctx.resume(); } catch {}
@@ -229,6 +236,25 @@
         },
         video: false,
       });
+      const track = state.stream.getAudioTracks()[0];
+      if (track) {
+        // The OS mutes our track when a phone/WhatsApp call takes the mic.
+        track.addEventListener('mute', () => {
+          state.hold.mic = true;
+          updateHold();
+        });
+        track.addEventListener('unmute', () => {
+          state.hold.mic = false;
+          updateHold();
+        });
+        track.addEventListener('ended', () => {
+          state.hold.mic = false;
+          state.micOk = false;
+          updateHold();
+          render();
+        });
+      }
+      state.hold.mic = false;
       state.srcNode = state.ctx.createMediaStreamSource(state.stream);
       state.worklet = new AudioWorkletNode(state.ctx, 'ptt-capture', {
         numberOfInputs: 1,
@@ -293,7 +319,7 @@
 
   function tone(freq, dur, t0, { type = 'sine', vol = 0.08, dest = null } = {}) {
     const ctx = state.ctx;
-    if (!ctx) return;
+    if (!ctx || state.held) return;
     const o = ctx.createOscillator();
     const g = ctx.createGain();
     o.type = type;
@@ -333,6 +359,7 @@
   }
 
   function speakHi(hiText, latinText) {
+    if (state.held) return;
     try {
       const u = new SpeechSynthesisUtterance();
       const hi = speechSynthesis.getVoices().find((v) => /^hi\b|^hi-/i.test(v.lang));
@@ -379,7 +406,7 @@
 
   // Play the channel's recorded roast; returns its duration in seconds.
   function playClip(pcm, vol = 1) {
-    if (!state.ctx || !pcm) return 0;
+    if (!state.ctx || !pcm || state.held) return 0;
     const ab = state.ctx.createBuffer(1, pcm.length, 16000);
     const chd = ab.getChannelData(0);
     for (let i = 0; i < pcm.length; i++) chd[i] = pcm[i] / 32768;
@@ -402,7 +429,7 @@
     toast(
       `🚨 ${name}: ${kmh} km/h — ${line ? line.latin(n) : 'bhencho bhencho dheere chala!'}`
     );
-    if (state.muted) return;
+    if (state.muted || state.held) return;
     if (state.ctx) {
       const t = state.ctx.currentTime;
       tone(392, 0.12, t, { type: 'square', vol: 0.09 });
@@ -617,6 +644,10 @@
 
   async function startTalk() {
     if (!state.joined || state.talk !== 'idle') return;
+    if (state.held) {
+      toast('⏸ On hold — your phone is busy in another app');
+      return;
+    }
     if (!state.micOk) {
       attemptMic();
       return;
@@ -649,6 +680,25 @@
     }
     state.talk = 'idle';
     state.tx = 0;
+    render();
+  }
+
+  function updateHold() {
+    const h = state.hold.mic || state.hold.ctx || state.hold.hidden;
+    if (h === state.held) return;
+    state.held = h;
+    if (h) {
+      try { speechSynthesis.cancel(); } catch {}
+      if (state.talk !== 'idle') stopTalk();
+      if (state.recording) stopRecording();
+      banner('⏸ On hold — another app is using your phone\u2019s audio (a call?). Talkie resumes automatically when it ends.');
+    } else {
+      banner('');
+      if (state.ctx && state.ctx.state !== 'running') {
+        state.ctx.resume().catch(() => {});
+      }
+      toast('▶ Back on the channel');
+    }
     render();
   }
 
@@ -687,7 +737,7 @@
       energy += Math.abs(v);
     }
     state.stats.rxEnergy += energy;
-    if (state.muted) return;
+    if (state.muted || state.held) return;
     const now = state.ctx.currentTime;
     if (!state.playhead || state.playhead < now + 0.02) {
       state.playhead = now + JITTER_S;
@@ -1011,7 +1061,7 @@
     const someoneElse = state.speaker && state.speaker.id !== state.myId;
     els.ptt.classList.toggle('live', state.talk === 'live');
     els.ptt.classList.toggle('pending', state.talk === 'pending');
-    els.ptt.classList.toggle('busy', !!someoneElse);
+    els.ptt.classList.toggle('busy', !!someoneElse || state.held);
     els.ptt.disabled = !state.joined;
     els.ptt.classList.toggle('nomic', state.joined && !state.micOk && !state.micBusy);
     els.stage.classList.toggle('incoming', !!someoneElse);
@@ -1019,6 +1069,8 @@
     let status;
     if (!state.ws && (state.joined || state.joining)) {
       status = '📡 Reconnecting…';
+    } else if (state.held) {
+      status = '⏸ On hold — phone is busy in another app';
     } else if (state.talk === 'live') {
       status = '🔴 ON AIR — release to stop';
     } else if (state.talk === 'pending') {
@@ -1038,7 +1090,9 @@
     els.pttLabel.textContent =
       state.talk === 'live'
         ? 'ON AIR'
-        : someoneElse
+        : state.held
+          ? 'ON HOLD'
+          : someoneElse
           ? 'BUSY'
           : !state.micOk
             ? state.micBusy
@@ -1193,6 +1247,8 @@
   }
 
   document.addEventListener('visibilitychange', () => {
+    state.hold.hidden = document.visibilityState === 'hidden';
+    updateHold();
     if (document.visibilityState === 'visible') {
       if (state.ctx && state.ctx.state !== 'running') {
         state.ctx.resume().catch(() => {});
