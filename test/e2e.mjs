@@ -238,19 +238,11 @@ try {
   await dave.fill('#code', 'e2e-speed');
   await dave.click('#joinBtn');
   await dave.waitForFunction(() => window.__talkie.joined, null, { timeout: 15000 });
-  // Cycle the channel-wide limit to 30 via the 🚦 button (server round-trip;
-  // the server accepts at most one change per second).
-  for (let i = 0; i < 8; i++) {
-    const cur = await dave.evaluate(() => window.__talkie.limitKmh);
-    if (cur === 30) break;
-    await dave.waitForTimeout(1100);
-    await dave.click('#limitBtn');
-    await dave.waitForFunction((prev) => window.__talkie.limitKmh !== prev, cur, {
-      timeout: 5000,
-    });
-  }
-  const limitLabel = await dave.evaluate(() => document.querySelector('#limitBtn').textContent);
-  check('channel-wide limit set to 30 via 🚦 button', limitLabel === '🚦30', limitLabel);
+  // Set the channel-wide limit to 30 via the 🚦 dropdown (server round-trip).
+  await dave.selectOption('#limitBtn', '30');
+  await dave.waitForFunction(() => window.__talkie.limitKmh === 30, null, { timeout: 5000 });
+  const limitVal = await dave.evaluate(() => document.querySelector('#limitBtn').value);
+  check('channel-wide limit set to 30 via 🚦 dropdown', limitVal === '30', limitVal);
   await dave.waitForFunction(() => window.__talkie.lastFix != null, null, { timeout: 10000 });
   // "Drive": step the position ~44 m every 1.2 s (~130 km/h) until the roast fires.
   let lat = 12.9716;
@@ -307,6 +299,9 @@ try {
   await frank.keyboard.up('Space');
   check('ws -> compatibility-mode audio flows', true);
   await eve.waitForFunction(() => window.__talkie.micOk, null, { timeout: 10000 });
+  // Long-poll delivers Frank's release a beat later; press only once Eve sees the channel clear
+  // (mirrors the speaker===null guard in the ws roles-swap above).
+  await eve.waitForFunction(() => window.__talkie.speaker === null, null, { timeout: 10000 });
   await eve.keyboard.down('Space');
   await eve.waitForFunction(() => window.__talkie.talk === 'live', null, { timeout: 10000 });
   await frank.waitForFunction(() => window.__talkie.stats.framesRx > 10, null, {

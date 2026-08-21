@@ -69,7 +69,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.7';
+  const APP_VERSION = '2.8';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -240,7 +240,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=27'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=28'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -394,7 +394,6 @@
   }
 
   // ------------------------------------------------- speed watch ("dheere chala")
-  const LIMIT_STEPS = [20, 30, 40, 60, 80, 100, 120, 0]; // 0 = off
 
   function cleanName(name) {
     // Letters/digits only, so TTS never narrates emojis or symbols.
@@ -645,17 +644,19 @@
   }
 
   function renderLimit() {
-    els.limitBtn.textContent = state.limitKmh ? `🚦${state.limitKmh}` : '🚦off';
+    els.limitBtn.value = String(state.limitKmh);
   }
 
-  function cycleLimit() {
-    if (!state.joined || !state.ws || state.ws.readyState !== 1) return;
-    const i = LIMIT_STEPS.indexOf(state.limitKmh);
-    const next = LIMIT_STEPS[(i + 1) % LIMIT_STEPS.length];
-    state.geoDenied = false; // a manual tap is a fresh chance to allow location
-    if (next && state.geoWatch == null) startGeo();
+  function setLimit(kmh) {
+    if (!state.joined || !state.ws || state.ws.readyState !== 1) {
+      renderLimit();
+      return;
+    }
+    state.geoDenied = false; // choosing a limit is a fresh chance to allow location
+    if (kmh && state.geoWatch == null) startGeo();
     // The server owns the limit; everyone (incl. us) updates on its broadcast.
-    wsSend({ t: 'limit', kmh: next });
+    wsSend({ t: 'limit', kmh });
+    setTimeout(renderLimit, 1500); // snap back if the server didn't accept it
   }
 
   // ------------------------------------------------------------ transmit path
@@ -1779,7 +1780,7 @@
     els.shareBtn.addEventListener('click', share);
     els.inviteHint.addEventListener('click', share);
     renderLimit(); // channel-wide limit arrives from the server after joining
-    els.limitBtn.addEventListener('click', cycleLimit);
+    els.limitBtn.addEventListener('change', () => setLimit(Number(els.limitBtn.value)));
     try { speechSynthesis.getVoices(); } catch {} // warm the voice list
     state.myClip = loadClip();
     state.clip = state.myClip;

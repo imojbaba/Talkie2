@@ -166,6 +166,15 @@ body {
   cursor: pointer; box-shadow: var(--shadow-sm);
 }
 .pill:active { transform: scale(0.96); }
+select.pill {
+  -webkit-appearance: none;
+  appearance: none;
+  font-family: inherit;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="6"><path d="M1 1l4 4 4-4" stroke="%23808ea3" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>');
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  padding-right: 27px;
+}
 .pill.danger { color: var(--danger); }
 .pill.armed { background: var(--danger); border-color: var(--danger); color: #fff; }
 .pill.rec { border-color: var(--live); color: var(--live); animation: blink 0.8s infinite; }
