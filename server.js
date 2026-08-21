@@ -30,6 +30,7 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const SERVER_VER = 7;
 const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE) || 16;
 const SPEAKER_TIMEOUT_MS = Number(process.env.SPEAKER_TIMEOUT_MS) || 5000;
 const MAX_BINARY_BYTES = 8 * 1024;
@@ -156,7 +157,7 @@ function onControl(ws, msg) {
       ws.name = normalizeName(msg.name, 'Guest-' + ws.id.slice(0, 2));
       ws.room = room;
       room.clients.add(ws);
-      send(ws, { t: 'joined', id: ws.id, room: code });
+      send(ws, { t: 'joined', id: ws.id, room: code, ver: SERVER_VER });
       broadcast(room, { t: 'peer-join', id: ws.id, name: ws.name }, ws);
       broadcast(room, rosterOf(room), null);
       if (room.clip && ws.readyState === ws.OPEN) {
@@ -291,7 +292,7 @@ function serveStatic(req, res) {
   }
   if (pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    return res.end('ok');
+    return res.end('ok v' + SERVER_VER);
   }
   // Paths without a file extension are channel share links -> serve the app.
   let rel = pathname.replace(/\/+$/, '') || '/';

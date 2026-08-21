@@ -1,5 +1,5 @@
 /* Talkie service worker — offline app shell. Audio itself needs the network. */
-const CACHE = 'talkie-v8';
+const CACHE = 'talkie-v9';
 const ASSETS = [
   '/',
   '/style.css',
@@ -43,19 +43,17 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Stale-while-revalidate for static assets.
+  // Network-first keeps every asset in lockstep with the deployed app;
+  // the cache is only an offline fallback.
   e.respondWith(
-    caches.match(req).then((cached) => {
-      const fresh = fetch(req)
-        .then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put(req, copy));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || fresh;
-    })
+    fetch(req)
+      .then((res) => {
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req, { ignoreSearch: true }))
   );
 });

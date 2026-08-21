@@ -78,6 +78,7 @@ test('join, roster, floor control, relay, release', async () => {
   a.j({ t: 'join', room: 'Test Room!', name: 'Alice' });
   const joinedA = await a.next((m) => m.t === 'joined');
   assert.equal(joinedA.room, 'test-room'); // normalized
+  assert.ok(joinedA.ver >= 7); // server advertises its protocol version
   await a.next((m) => m.t === 'roster' && m.members.length === 1);
 
   b.j({ t: 'join', room: 'test-room', name: 'Bob' });

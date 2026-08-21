@@ -45,6 +45,8 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
+  const APP_VERSION = '1.7';
+  const MIN_SERVER_VER = 7;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
   const PENDING_CAP = 50; // ~1 s of buffered speech while waiting for a grant
@@ -195,7 +197,7 @@
       limiter.release.value = 0.15;
       state.remoteGain.connect(limiter);
       limiter.connect(state.ctx.destination);
-      await state.ctx.audioWorklet.addModule('/worklet.js');
+      await state.ctx.audioWorklet.addModule('/worklet.js?v=17');
     }
     if (state.ctx.state !== 'running') {
       try { await state.ctx.resume(); } catch {}
@@ -768,6 +770,9 @@
         state.retry = 0;
         state.autoUploaded = false;
         state.speeds = {};
+        if (!msg.ver || msg.ver < MIN_SERVER_VER) {
+          banner('⏳ The server is still rolling out an update — some features may be missing for a few minutes.');
+        }
         setConn('up');
         showChannel();
         keepAwake();
@@ -1191,6 +1196,8 @@
 
   // ------------------------------------------------------------------- boot
   function boot() {
+    // The running code stamps the version so the label can never lie.
+    document.querySelectorAll('.ver').forEach((el) => (el.textContent = 'v' + APP_VERSION));
     els.name.value = storage.get('talkie.name');
     const seg = decodeURIComponent(location.pathname.replace(/^\/+/, '').split('/')[0] || '');
     const q = new URLSearchParams(location.search).get('c') || '';
