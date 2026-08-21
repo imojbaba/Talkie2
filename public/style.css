@@ -241,6 +241,11 @@ body {
 }
 @media (hover: none) { .kbHint { display: none; } }
 
+.ver {
+  text-align: center; color: var(--dim); opacity: 0.45;
+  font-size: 0.72rem; margin-top: 10px;
+}
+
 .toast {
   position: fixed; left: 50%; bottom: calc(26px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
