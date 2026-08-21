@@ -99,6 +99,7 @@ body {
 .cta:disabled { opacity: 0.6; }
 
 .err { color: var(--danger); font-size: 0.9rem; }
+.err.info { color: var(--dim); }
 .hint { color: var(--dim); text-align: center; font-size: 0.85rem; line-height: 1.5; margin-top: 22px; }
 
 /* ------------------------------------------------------------- channel */

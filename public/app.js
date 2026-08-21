@@ -45,7 +45,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '1.9';
+  const APP_VERSION = '2.0';
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
@@ -204,10 +204,19 @@
         state.hold.ctx = state.ctx.state === 'interrupted';
         updateHold();
       });
-      await state.ctx.audioWorklet.addModule('/worklet.js?v=19');
+      // iOS WebKit can leave these promises pending; never hang on them.
+      await Promise.race([
+        state.ctx.audioWorklet.addModule('/worklet.js?v=20'),
+        new Promise((r) => setTimeout(r, 4000)),
+      ]);
     }
     if (state.ctx.state !== 'running') {
-      try { await state.ctx.resume(); } catch {}
+      try {
+        await Promise.race([
+          state.ctx.resume(),
+          new Promise((r) => setTimeout(r, 1500)),
+        ]);
+      } catch {}
     }
   }
 
@@ -759,6 +768,11 @@
   function connect() {
     state.joining = true;
     setConn('connecting');
+    if (!state.joined) {
+      els.joinErr.textContent = 'Connecting…';
+      els.joinErr.classList.add('info');
+      els.joinErr.hidden = false;
+    }
     const ws = new WebSocket(wsUrl());
     ws.binaryType = 'arraybuffer';
     state.ws = ws;
@@ -797,6 +811,11 @@
       if (state.joined || state.joining) {
         setConn('down');
         render();
+        if (!state.joined) {
+          els.joinErr.textContent = 'Can\u2019t reach the server \u2014 retrying\u2026';
+          els.joinErr.classList.add('info');
+          els.joinErr.hidden = false;
+        }
         const delay = Math.min(1000 * 2 ** state.retry, 10000) + Math.random() * 400;
         state.retry++;
         setTimeout(() => {
@@ -937,6 +956,7 @@
           state.closing = true;
           try { state.ws && state.ws.close(); } catch {}
           showJoin();
+          els.joinErr.classList.remove('info');
           els.joinErr.textContent = msg.message || 'Could not join.';
           els.joinErr.hidden = false;
         } else {
@@ -1140,6 +1160,7 @@
   async function doJoin() {
     const code = normalizeCode(els.code.value);
     if (!code || code.length < 2) {
+      els.joinErr.classList.remove('info');
       els.joinErr.textContent = 'Pick a channel word (letters/numbers, 2+ chars).';
       els.joinErr.hidden = false;
       return;
@@ -1158,9 +1179,11 @@
         u.volume = 0;
         speechSynthesis.speak(u);
       } catch {}
-      await ensureContext().catch(() => {});
-      connect();
-      attemptMic(); // prompt in parallel; joining shouldn't wait on the mic
+      connect(); // joining must never wait on audio APIs (iOS can stall them)
+      (async () => {
+        try { await ensureContext(); } catch {}
+        attemptMic();
+      })();
     } finally {
       els.joinBtn.disabled = false;
       els.joinBtn.textContent = 'Join channel';
