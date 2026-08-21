@@ -364,6 +364,32 @@ test('push: away/offline subscribed members get buzzed; foreground and left do n
   c.close();
 });
 
+test('push-test buzzes yourself, rate-limited, needs a subscription', async () => {
+  const a = await client();
+  a.j({ t: 'join', room: 'selftest-room', name: 'Solo' });
+  const j = await a.next((m) => m.t === 'joined');
+
+  a.j({ t: 'push-test' }); // no subscription yet -> friendly error
+  const err = await a.next((m) => m.t === 'error' && m.code === 'no-push');
+  assert.ok(err.message.includes('🔔'));
+
+  a.j({
+    t: 'push-sub',
+    sub: { endpoint: 'https://push.example/solo', keys: { p256dh: 'k', auth: 'a' } },
+  });
+  await new Promise((r) => setTimeout(r, 60));
+  a.j({ t: 'push-test' });
+  await new Promise((r) => setTimeout(r, 60));
+  const mine = pushLog.filter((p) => p.id === j.id && p.payload.tag === 'talkie-test');
+  assert.equal(mine.length, 1);
+  assert.ok(mine[0].payload.title.includes('working'));
+
+  a.j({ t: 'push-test' }); // inside the 15 s window -> dropped
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(pushLog.filter((p) => p.id === j.id && p.payload.tag === 'talkie-test').length, 1);
+  a.close();
+});
+
 test('photo owner can delete it; others cannot', async () => {
   const MARK = 0xfffffffe;
   const a = await client();

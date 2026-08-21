@@ -22,6 +22,7 @@
     sheetClose: $('#sheetClose'),
     pingBtn: $('#pingBtn'),
     notifBtn: $('#notifBtn'),
+    pushTestBtn: $('#pushTestBtn'),
     installBtn: $('#installBtn'),
     installSheet: $('#installSheet'),
     installInApp: $('#installInApp'),
@@ -78,7 +79,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '3.3';
+  const APP_VERSION = '3.4';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -330,7 +331,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=33'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=34'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -2286,6 +2287,23 @@
         enablePush();
       } else if (IS_IOS && !IS_STANDALONE) {
         openInstallSheet(); // notifications need the installed app on iPhone
+      } else {
+        toast('This browser doesn’t support notifications');
+      }
+    });
+    els.pushTestBtn.addEventListener('click', async () => {
+      els.sheet.hidden = true;
+      const fire = () => {
+        wsSend({ t: 'push-test' });
+        toast('🧪 Test sent — pops up in a few seconds (try it with the phone locked!)');
+      };
+      if (state.push === 'on') {
+        fire();
+      } else if (pushSupported()) {
+        await enablePush(); // sets up first, then tests
+        if (state.push === 'on') fire();
+      } else if (IS_IOS && !IS_STANDALONE) {
+        openInstallSheet();
       } else {
         toast('This browser doesn’t support notifications');
       }

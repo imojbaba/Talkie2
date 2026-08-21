@@ -33,7 +33,7 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const SERVER_VER = 12;
+const SERVER_VER = 13;
 const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE) || 16;
 const SPEAKER_TIMEOUT_MS = Number(process.env.SPEAKER_TIMEOUT_MS) || 5000;
 // Trip memory: a channel survives everyone dropping (chai stop, dead zone),
@@ -362,6 +362,31 @@ function onControl(ws, msg) {
       ws.explicitLeave = true;
       if (ws.room) ws.room.pushSubs.delete(ws.id); // left the trip: stop buzzing them
       leaveRoom(ws);
+      break;
+    }
+    case 'push-test': {
+      // Solo sanity check: buzz *yourself* to confirm the setup works,
+      // no second rider needed.
+      const room = ws.room;
+      if (!room) return;
+      const now = Date.now();
+      if (now - (ws.lastPushTest || 0) < 15000) return;
+      const sub = room.pushSubs.get(ws.id);
+      if (!sub) {
+        // Not rate-stamped: enabling and re-tapping right away should work.
+        return send(ws, {
+          t: 'error',
+          code: 'no-push',
+          message: 'Notifications aren’t on yet — tap 🔔 in Trip tools first.',
+        });
+      }
+      ws.lastPushTest = now;
+      queuePush(room, ws.id, sub, {
+        title: '🔔 Notifications are working!',
+        body: `You’ll get buzzed when #${room.code} talks, pings, or shares.`,
+        tag: 'talkie-test',
+        room: room.code,
+      });
       break;
     }
     case 'push-sub': {

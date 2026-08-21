@@ -1,5 +1,5 @@
 /* Talkie service worker — offline app shell. Audio itself needs the network. */
-const CACHE = 'talkie-v25';
+const CACHE = 'talkie-v26';
 const ASSETS = [
   '/',
   '/style.css',
