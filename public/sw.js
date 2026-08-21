@@ -1,5 +1,5 @@
 /* Talkie service worker — offline app shell. Audio itself needs the network. */
-const CACHE = 'talkie-v26';
+const CACHE = 'talkie-v27';
 const ASSETS = [
   '/',
   '/style.css',
@@ -33,6 +33,15 @@ self.addEventListener('activate', (e) => {
 
 // Background notifications: the phone can't play the channel while locked,
 // but it can buzz — "X is talking", "X pinged", "photo shared".
+// The OS owns the notification *sound* (web apps can't change it), but
+// Android honors per-notification vibration, so each kind feels different.
+const VIBES = {
+  'talkie-ping': [300, 120, 300, 120, 600],
+  'talkie-talk': [150, 90, 150],
+  'talkie-roast': [90, 60, 90, 60, 240],
+  'talkie-test': [200, 100, 200],
+};
+
 self.addEventListener('push', (e) => {
   let d = {};
   try {
@@ -44,6 +53,9 @@ self.addEventListener('push', (e) => {
       tag: d.tag || 'talkie',
       icon: '/icons/icon-192.png',
       badge: '/icons/favicon-32.png',
+      vibrate: VIBES[d.tag] || [150, 80, 200],
+      // pings and talk re-alert every time instead of replacing silently
+      renotify: d.tag === 'talkie-ping' || d.tag === 'talkie-talk',
       data: { room: d.room || '' },
     })
   );

@@ -79,7 +79,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '3.4';
+  const APP_VERSION = '3.5';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -331,7 +331,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=34'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=35'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1271,6 +1271,19 @@
         state.speaker = { id: msg.id, name: msg.name, tx: msg.tx };
         state.rxTx = msg.tx;
         state.playhead = 0;
+        // Pocket announce: the page is alive in the background but playback
+        // isn't running — say who's talking instead of staying silent.
+        // (Never spoken over their actual voice.)
+        if (
+          document.hidden &&
+          !state.muted &&
+          !state.held &&
+          (!state.ctx || state.ctx.state !== 'running')
+        ) {
+          const n = cleanName(msg.name);
+          speakHi(`${n} कुछ बोल रहा है`, `${n} kuch bol raha hai`);
+          vibrate([90, 60, 90]);
+        }
         render();
         break;
       }
@@ -1331,6 +1344,11 @@
           tone(880, 0.1, t0, { vol: 0.09 });
           tone(880, 0.1, t0 + 0.14, { vol: 0.09 });
           tone(1175, 0.16, t0 + 0.28, { vol: 0.09 });
+        }
+        // The ping has a voice — in the open app, and on Android even a
+        // while after backgrounding, as long as the page is still alive.
+        if (!state.muted && !state.held && msg.by.id !== state.myId) {
+          setTimeout(() => speakHi('उठा ले भोले!', 'utha le bhole!'), 380);
         }
         break;
       }
