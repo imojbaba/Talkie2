@@ -220,6 +220,8 @@ body {
 }
 
 .status { text-align: center; font-size: 1rem; color: var(--dim); min-height: 24px; }
+.speedLine { text-align: center; font-size: 0.8rem; color: var(--dim); min-height: 18px; margin-top: 5px; }
+.hbtns .pill { padding: 8px 10px; }
 .status[data-mode="live"] { color: #fca5a5; font-weight: 700; }
 .status[data-mode="incoming"] { color: var(--ok); font-weight: 600; }
 

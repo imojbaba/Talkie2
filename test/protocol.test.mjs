@@ -171,3 +171,32 @@ test('bad channel word and ping/pong', async () => {
   await a.next((m) => m.t === 'pong');
   a.close();
 });
+
+test('overspeed relays to the whole room, rate-limited, validated', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'speed-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'speed-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  a.j({ t: 'overspeed', kmh: 88.4 });
+  const gotB = await b.next((m) => m.t === 'overspeed');
+  assert.equal(gotB.name, 'Alice');
+  assert.equal(gotB.kmh, 88);
+  const gotA = await a.next((m) => m.t === 'overspeed'); // sender hears it too
+  assert.equal(gotA.kmh, 88);
+
+  // second alert inside the 10s window is dropped
+  a.j({ t: 'overspeed', kmh: 120 });
+  await b.expectNone((m) => m.t === 'overspeed');
+
+  // junk values are dropped (no rate-limit excuse: use B, who hasn't alerted)
+  b.j({ t: 'overspeed', kmh: 900 });
+  b.j({ t: 'overspeed', kmh: -5 });
+  b.j({ t: 'overspeed', kmh: 'zoom' });
+  await a.expectNone((m) => m.t === 'overspeed');
+
+  a.close();
+  b.close();
+});

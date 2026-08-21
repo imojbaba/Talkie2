@@ -172,6 +172,18 @@ function onControl(ws, msg) {
       if (room && room.speaker === ws) releaseFloor(room, 'ended');
       break;
     }
+    case 'overspeed': {
+      // Speed-limit roast: client sends only a number, never coordinates.
+      const room = ws.room;
+      if (!room) return;
+      const kmh = Math.round(Number(msg.kmh));
+      if (!(kmh > 0 && kmh < 300)) return;
+      const now = Date.now();
+      if (now - (ws.lastOverspeed || 0) < 10000) return;
+      ws.lastOverspeed = now;
+      broadcast(room, { t: 'overspeed', id: ws.id, name: ws.name, kmh }, null);
+      break;
+    }
     case 'ping':
       send(ws, { t: 'pong' });
       break;

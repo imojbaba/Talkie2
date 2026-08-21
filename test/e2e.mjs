@@ -190,6 +190,41 @@ try {
   check('recovered mic can transmit', true);
   await ctxC.close();
 
+  // Speed alerts: emulated GPS movement above the limit must broadcast the roast.
+  const ctxD = await browser.newContext({
+    permissions: ['geolocation'],
+    geolocation: { latitude: 12.9716, longitude: 77.5946, accuracy: 10 },
+  });
+  await ctxD.addInitScript(() => {
+    try { localStorage.setItem('talkie.limit', '40'); } catch {}
+  });
+  const dave = await ctxD.newPage();
+  dave.on('pageerror', (e) => console.log('[Dave pageerror]', e.message));
+  await dave.goto(url, { waitUntil: 'load' });
+  await dave.fill('#name', 'Dave');
+  await dave.fill('#code', 'e2e-speed');
+  await dave.click('#joinBtn');
+  await dave.waitForFunction(() => window.__talkie.joined, null, { timeout: 15000 });
+  const limitLabel = await dave.evaluate(() => document.querySelector('#limitBtn').textContent);
+  check('limit pill reflects stored limit', limitLabel === '🚦40', limitLabel);
+  await dave.waitForFunction(() => window.__talkie.lastFix != null, null, { timeout: 10000 });
+  // "Drive": step the position ~44 m every 1.2 s (~130 km/h) until the roast fires.
+  let lat = 12.9716;
+  for (let i = 0; i < 8; i++) {
+    await dave.waitForTimeout(1200);
+    lat += 0.0004;
+    await ctxD.setGeolocation({ latitude: lat, longitude: 77.5946, accuracy: 10 });
+    if (await dave.evaluate(() => !!window.__talkie.lastGaali)) break;
+  }
+  await dave.waitForFunction(
+    () => window.__talkie.lastGaali && window.__talkie.lastGaali.name === 'Dave',
+    null,
+    { timeout: 5000 }
+  );
+  const g = await dave.evaluate(() => window.__talkie.lastGaali);
+  check('GPS overspeed detected and roast broadcast', g.kmh > 40, `${g.kmh} km/h`);
+  await ctxD.close();
+
   // PWA bits reachable
   for (const p of ['/manifest.webmanifest', '/sw.js', '/worklet.js', '/icons/icon-192.png', '/healthz']) {
     const res = await alice.evaluate(async (u) => (await fetch(u)).status, p);

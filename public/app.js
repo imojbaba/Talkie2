@@ -12,6 +12,7 @@
     chWord: $('#chWord'),
     connDot: $('#connDot'),
     shareBtn: $('#shareBtn'),
+    limitBtn: $('#limitBtn'),
     muteBtn: $('#muteBtn'),
     leaveBtn: $('#leaveBtn'),
     banner: $('#banner'),
@@ -20,6 +21,7 @@
     ptt: $('#ptt'),
     pttLabel: $('#pttLabel'),
     status: $('#status'),
+    speedLine: $('#speedLine'),
     meter: $('#meter'),
     toast: $('#toast'),
   };
@@ -74,6 +76,13 @@
     retry: 0,
     lastMsgAt: 0,
     lastDenied: null,
+    geoOk: false,
+    geoWatch: null,
+    limitKmh: 60,
+    lastFix: null,
+    speedKmh: null,
+    lastAlertAt: 0,
+    lastGaali: null,
     wake: null,
     stats: { framesTx: 0, framesRx: 0, rxEnergy: 0 },
   };
@@ -303,6 +312,127 @@
     tone(1319, 0.09, t + 0.07, { dest: state.remoteGain, vol: 0.06 });
   }
 
+  // ------------------------------------------------- speed watch ("dheere chala")
+  const LIMIT_STEPS = [40, 60, 80, 100, 120, 0]; // 0 = off
+
+  function speakGaali() {
+    try {
+      const u = new SpeechSynthesisUtterance();
+      const hi = speechSynthesis.getVoices().find((v) => /^hi\b|^hi-/i.test(v.lang));
+      if (hi) {
+        u.voice = hi;
+        u.lang = hi.lang;
+        u.text = 'बी सी बी सी! धीरे चला यार!';
+      } else {
+        u.lang = 'hi-IN';
+        u.text = 'b c b c! dheere chala yaar!';
+      }
+      u.rate = 1.05;
+      u.volume = 1;
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+    } catch {}
+  }
+
+  function gaali(name, kmh) {
+    state.lastGaali = { name, kmh, at: Date.now() };
+    toast(`🚨 ${name}: ${kmh} km/h — bc bc dheere chala!`);
+    if (state.muted) return;
+    if (state.ctx) {
+      const t = state.ctx.currentTime;
+      tone(392, 0.12, t, { type: 'square', vol: 0.09 });
+      tone(392, 0.12, t + 0.16, { type: 'square', vol: 0.09 });
+    }
+    vibrate([90, 60, 90]);
+    setTimeout(speakGaali, 350);
+  }
+
+  function distM(a, b) {
+    const R = 6371000;
+    const rad = Math.PI / 180;
+    const dLat = (b.lat - a.lat) * rad;
+    const dLon = (b.lon - a.lon) * rad;
+    const s =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(s));
+  }
+
+  function onFix(pos) {
+    state.geoOk = true;
+    const c = pos.coords;
+    let kmh = null;
+    if (typeof c.speed === 'number' && isFinite(c.speed) && c.speed >= 0) {
+      kmh = c.speed * 3.6;
+    } else if (state.lastFix && c.accuracy != null && c.accuracy < 60) {
+      // Some browsers give no speed; derive it from successive fixes.
+      const dt = (pos.timestamp - state.lastFix.t) / 1000;
+      if (dt >= 1 && dt <= 15) {
+        kmh = (distM(state.lastFix, { lat: c.latitude, lon: c.longitude }) / dt) * 3.6;
+      }
+    }
+    state.lastFix = { lat: c.latitude, lon: c.longitude, t: pos.timestamp };
+    if (kmh == null || kmh > 250) return renderSpeed(null);
+    renderSpeed(kmh);
+    if (
+      state.joined &&
+      state.limitKmh &&
+      kmh > state.limitKmh &&
+      Date.now() - state.lastAlertAt > 15000
+    ) {
+      state.lastAlertAt = Date.now();
+      wsSend({ t: 'overspeed', kmh: Math.round(kmh) });
+    }
+  }
+
+  function startGeo() {
+    if (!('geolocation' in navigator) || state.geoWatch != null) return;
+    state.geoWatch = navigator.geolocation.watchPosition(
+      onFix,
+      (err) => {
+        // Transient unavailable/timeout errors happen mid-ride; keep watching.
+        if (err && err.code === 1) {
+          stopGeo();
+          toast('Location off — speed alerts disabled');
+        }
+      },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 }
+    );
+  }
+
+  function stopGeo() {
+    if (state.geoWatch != null) {
+      try { navigator.geolocation.clearWatch(state.geoWatch); } catch {}
+    }
+    state.geoWatch = null;
+    state.geoOk = false;
+    state.lastFix = null;
+    renderSpeed(null);
+  }
+
+  function renderSpeed(kmh) {
+    state.speedKmh = kmh;
+    els.speedLine.textContent =
+      kmh != null && kmh > 3 ? `📍 ${Math.round(kmh)} km/h` : '';
+  }
+
+  function renderLimit() {
+    els.limitBtn.textContent = state.limitKmh ? `🚦${state.limitKmh}` : '🚦off';
+  }
+
+  function cycleLimit() {
+    const i = LIMIT_STEPS.indexOf(state.limitKmh);
+    state.limitKmh = LIMIT_STEPS[(i + 1) % LIMIT_STEPS.length];
+    storage.set('talkie.limit', String(state.limitKmh));
+    renderLimit();
+    toast(
+      state.limitKmh
+        ? `Speed alerts above ${state.limitKmh} km/h`
+        : 'Speed alerts off'
+    );
+    if (state.limitKmh && state.geoWatch == null) startGeo();
+  }
+
   // ------------------------------------------------------------ transmit path
   function packFrame(tx, pcm) {
     const buf = new ArrayBuffer(4 + pcm.byteLength);
@@ -476,6 +606,7 @@
         setConn('up');
         showChannel();
         keepAwake();
+        if (state.limitKmh) startGeo();
         break;
       }
       case 'roster': {
@@ -578,6 +709,9 @@
         }
         break;
       }
+      case 'overspeed':
+        gaali(msg.name, msg.kmh);
+        break;
       case 'pong':
         break;
     }
@@ -734,6 +868,12 @@
     els.joinBtn.disabled = true;
     els.joinBtn.textContent = 'Joining…';
     try {
+      // Speaking later (speed alerts) needs one speak() inside a user gesture.
+      try {
+        const u = new SpeechSynthesisUtterance(' ');
+        u.volume = 0;
+        speechSynthesis.speak(u);
+      } catch {}
       await ensureContext().catch(() => {});
       connect();
       attemptMic(); // prompt in parallel; joining shouldn't wait on the mic
@@ -769,6 +909,7 @@
     state.micOk = false;
     state.micErr = null;
     banner('');
+    stopGeo();
   }
 
   async function share() {
@@ -853,6 +994,14 @@
     });
     els.leaveBtn.addEventListener('click', leave);
     els.shareBtn.addEventListener('click', share);
+    const storedLimit = storage.get('talkie.limit');
+    if (storedLimit !== '') {
+      const n = Number(storedLimit);
+      if (LIMIT_STEPS.includes(n)) state.limitKmh = n;
+    }
+    renderLimit();
+    els.limitBtn.addEventListener('click', cycleLimit);
+    try { speechSynthesis.getVoices(); } catch {} // warm the voice list
     els.muteBtn.addEventListener('click', () => {
       state.muted = !state.muted;
       els.muteBtn.textContent = state.muted ? '🔇' : '🔊';

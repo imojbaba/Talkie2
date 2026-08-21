@@ -51,7 +51,7 @@
       </div>
 
       <p class="hint">Tell your friend the word — same word, same channel.<br>Anyone who knows the word can join, so keep it between you.</p>
-      <p class="ver">v1.1</p>
+      <p class="ver">v1.2</p>
     </section>
 
     <section id="channel" class="screen" hidden>
@@ -62,6 +62,7 @@
         </div>
         <div class="hbtns">
           <button id="shareBtn" type="button" class="pill">Invite</button>
+          <button id="limitBtn" type="button" class="pill" title="Speed limit for alerts">🚦60</button>
           <button id="muteBtn" type="button" class="pill" aria-pressed="false" title="Mute incoming">🔊</button>
           <button id="leaveBtn" type="button" class="pill danger">Leave</button>
         </div>
@@ -85,9 +86,10 @@
       </div>
 
       <div id="status" class="status" data-mode="idle">Channel clear</div>
+      <div id="speedLine" class="speedLine"></div>
       <div class="meterWrap" aria-hidden="true"><div id="meter"></div></div>
       <p class="kbHint">Tip: hold <kbd>Space</kbd> to talk</p>
-      <p class="ver">v1.1</p>
+      <p class="ver">v1.2</p>
     </section>
 
   </main>

@@ -23,6 +23,12 @@ to your home screen.
   WebSocket, so it works across any networks/NAT (unlike raw peer-to-peer).
 - **PWA** — installable on iOS/Android home screens, offline app shell,
   screen wake-lock while on a channel.
+- **Speed roast 🚦** — optional: share location, set a limit with the 🚦
+  button (40/60/80/100/120/off), and whoever rides past it triggers a
+  spoken *"bc bc dheere chala!"* (Hindi TTS) plus horn beeps on
+  everyone's phone. Privacy: speed is computed on-device — GPS
+  coordinates never leave the phone, only "name + km/h" when someone
+  crosses the limit, at most once per 15 s.
 - **Resilient** — auto-reconnect with backoff, dead-connection watchdog,
   stuck-speaker timeout, per-client rate limiting.
 - **Zero frontend dependencies, one backend dependency** (`ws`).
