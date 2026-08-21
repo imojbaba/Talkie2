@@ -78,7 +78,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '3.1';
+  const APP_VERSION = '3.2';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -330,7 +330,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=31'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=32'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1289,7 +1289,7 @@
       case 'error': {
         if (msg.code === 'replaced' && state.joined) {
           // Another tab/device took over this identity: stop reconnecting.
-          leave();
+          leave({ keepPush: true });
           els.joinErr.classList.remove('info');
           els.joinErr.textContent =
             msg.message || 'You joined from another tab — this one stepped aside.';
@@ -1665,6 +1665,16 @@
         u.volume = 0;
         speechSynthesis.speak(u);
       } catch {}
+      // Notifications are part of joining: ask in this same tap (the browser
+      // queues it after the mic prompt). The subscription itself is sent
+      // once the server confirms the join.
+      if (pushSupported() && Notification.permission === 'default') {
+        try {
+          Notification.requestPermission()
+            .then(() => sendPushSub())
+            .catch(() => {});
+        } catch {}
+      }
       connect(); // joining must never wait on audio APIs (iOS can stall them)
       (async () => {
         try { await ensureContext(); } catch {}
@@ -1676,8 +1686,21 @@
     }
   }
 
-  function leave() {
+  function leave(opts = {}) {
     wsSend({ t: 'leave' }); // a real goodbye — don't linger as "away"
+    // Leaving also silences this channel, even if the connection is already
+    // dead: dropping the browser subscription makes the server's stored copy
+    // undeliverable, so the buzzing stops either way. (Skipped when another
+    // tab took over — it owns the subscription now.)
+    if (!opts.keepPush && pushSupported()) {
+      try {
+        navigator.serviceWorker.ready
+          .then((reg) => reg.pushManager.getSubscription())
+          .then((s) => s && s.unsubscribe())
+          .catch(() => {});
+      } catch {}
+    }
+    state.push = 'off';
     state.closing = true;
     state.joined = false;
     state.joining = false;
@@ -2015,9 +2038,8 @@
       );
       setTimeout(hideNotifBanner, 15000);
     } else if (IS_IOS && !IS_STANDALONE) {
-      const n = Number(storage.get('talkie.a2hs') || 0);
-      if (n >= 3) return; // don't nag forever
-      storage.set('talkie.a2hs', String(n + 1));
+      // Notifications are part of the trip — on iPhone that means installing,
+      // so the nudge appears on every browser-tab join until they do.
       banner(
         '🔔 Want pings when your phone is locked? Install Talkie to your Home Screen first.',
         'Show me how',
@@ -2141,6 +2163,7 @@
         els.leaveBtn.textContent = 'Leave';
         els.leaveBtn.classList.remove('armed');
         leave();
+        toast('👋 Left the channel — its notifications are off too');
         return;
       }
       leaveArmed = now;
