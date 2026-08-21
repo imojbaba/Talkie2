@@ -1,0 +1,22 @@
+{
+  "name": "talkie",
+  "version": "1.0.0",
+  "description": "Walkie-talkie in your browser — join a channel with one word, hold to talk.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/protocol.test.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "icons": "node tools/gen-icons.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.49.0"
+  }
+}

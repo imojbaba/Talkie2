@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Talkie — Push to Talk</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="description" content="Walkie-talkie in your browser. One word to join, hold to talk.">
+  <meta name="theme-color" content="#0b1220">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Talkie">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body data-screen="join">
+  <main class="app">
+
+    <section id="join" class="screen">
+      <header class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="46" height="46" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="8" y="6" width="8" height="14" rx="2.2"/>
+            <line x1="10.5" y1="2" x2="10.5" y2="6"/>
+            <line x1="10.5" y1="9.5" x2="13.5" y2="9.5"/>
+            <line x1="10.5" y1="11.5" x2="13.5" y2="11.5"/>
+            <rect x="10.2" y="14.5" width="3.6" height="2.6" rx="0.8"/>
+          </svg>
+        </div>
+        <h1>Talkie</h1>
+        <p class="tag">One word. Hold. Talk.</p>
+      </header>
+
+      <div class="card">
+        <label class="field">
+          <span>Your name</span>
+          <input id="name" maxlength="20" autocomplete="nickname" placeholder="Maverick" enterkeyhint="next">
+        </label>
+        <label class="field">
+          <span>Channel word</span>
+          <div class="row">
+            <input id="code" maxlength="24" autocapitalize="none" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="mango" enterkeyhint="go">
+            <button id="dice" type="button" class="iconBtn" title="Random word" aria-label="Random word">🎲</button>
+          </div>
+        </label>
+        <button id="joinBtn" type="button" class="cta">Join channel</button>
+        <p id="joinErr" class="err" hidden></p>
+      </div>
+
+      <p class="hint">Tell your friend the word — same word, same channel.<br>Anyone who knows the word can join, so keep it between you.</p>
+    </section>
+
+    <section id="channel" class="screen" hidden>
+      <header class="chHead">
+        <div class="chId">
+          <span class="chHash">#</span><span id="chWord">mango</span>
+          <span id="connDot" class="dot" data-state="connecting" title="Connecting…"></span>
+        </div>
+        <div class="hbtns">
+          <button id="shareBtn" type="button" class="pill">Invite</button>
+          <button id="muteBtn" type="button" class="pill" aria-pressed="false" title="Mute incoming">🔊</button>
+          <button id="leaveBtn" type="button" class="pill danger">Leave</button>
+        </div>
+      </header>
+
+      <div id="banner" class="banner" hidden></div>
+
+      <ul id="roster" class="roster" aria-label="People on this channel"></ul>
+
+      <div id="stage" class="stage">
+        <div class="rings" aria-hidden="true"><i></i><i></i><i></i></div>
+        <button id="ptt" aria-label="Hold to talk">
+          <svg viewBox="0 0 24 24" width="44" height="44" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="2.5" width="6" height="11" rx="3"/>
+            <path d="M5.5 11a6.5 6.5 0 0 0 13 0"/>
+            <line x1="12" y1="17.5" x2="12" y2="21"/>
+            <line x1="8.5" y1="21" x2="15.5" y2="21"/>
+          </svg>
+          <span id="pttLabel">HOLD TO TALK</span>
+        </button>
+      </div>
+
+      <div id="status" class="status" data-mode="idle">Channel clear</div>
+      <div class="meterWrap" aria-hidden="true"><div id="meter"></div></div>
+      <p class="kbHint">Tip: hold <kbd>Space</kbd> to talk</p>
+    </section>
+
+  </main>
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

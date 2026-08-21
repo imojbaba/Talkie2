@@ -1,0 +1,126 @@
+# Talkie 🎙️
+
+A walkie-talkie in your browser. One word to join, hold to talk.
+
+You pick a channel word (say, `mango`), your friend types the same word on
+their phone or laptop, and you have a private push-to-talk channel over the
+internet. No accounts, no apps to install — it's a web app / PWA you can add
+to your home screen.
+
+| Join | On air | Receiving |
+|---|---|---|
+| ![Join screen](docs/join.png) | ![Transmitting](docs/onair.png) | ![Receiving](docs/incoming.png) |
+
+## Features
+
+- **One-word channels** — same word, same channel. Share as a word or a link
+  (`https://your-host/mango`). 🎲 suggests a random word.
+- **Real walkie-talkie floor control** — one speaker at a time. If someone's
+  talking, your button buzzes "channel busy". Roger beep when they finish.
+- **Hold to talk** — press-and-hold the big button on mobile, or hold
+  <kbd>Space</kbd> on desktop.
+- **Works over the internet** — audio is relayed through the server over a
+  WebSocket, so it works across any networks/NAT (unlike raw peer-to-peer).
+- **PWA** — installable on iOS/Android home screens, offline app shell,
+  screen wake-lock while on a channel.
+- **Resilient** — auto-reconnect with backoff, dead-connection watchdog,
+  stuck-speaker timeout, per-client rate limiting.
+- **Zero frontend dependencies, one backend dependency** (`ws`).
+
+## Run it locally
+
+```bash
+npm install
+npm start          # → http://localhost:3000
+```
+
+Open two tabs, join the same word, hold Space in one. (Mic works on
+`localhost` without HTTPS.)
+
+## Put it on the internet
+
+The server is a single small Node process; any Node host works. Two easy
+paths:
+
+### Render (free tier) — works from a phone
+
+One-tap (uses the `render.yaml` blueprint at the repo root):
+
+> **[Deploy to Render](https://render.com/deploy?repo=https://github.com/imojbaba/talkie2)** — sign in with GitHub, approve, done.
+
+Or manually:
+
+1. [dashboard.render.com](https://dashboard.render.com) → **New → Web Service** → connect this repo.
+2. Build command `npm install`, start command `npm start`. Instance type: Free.
+3. Deploy. You get `https://your-app.onrender.com` — HTTPS included, which
+   the mic requires.
+
+Note: free instances sleep after ~15 min idle; the first visit after that
+takes ~30–60 s to wake. Fine for friends, annoying for daily use — the
+cheapest paid tier removes it.
+
+### Docker (Fly.io, Railway, a VPS, anything)
+
+```bash
+docker build -t talkie .
+docker run -p 3000:3000 talkie
+```
+
+Put HTTPS in front (the platform usually does this for you). The mic API
+requires a secure context.
+
+### Quick test from your own machine
+
+Any HTTPS tunnel works for a quick session without deploying, e.g.
+`cloudflared tunnel --url http://localhost:3000` (or ngrok). Send your friend
+the printed URL plus your channel word.
+
+## How it works
+
+```
+phone A                      server                       phone B
+  mic ─ AudioWorklet          Node + ws                    Web Audio
+  16 kHz PCM frames ──ws──▶  floor control  ──ws──▶  jitter buffer ─ speaker
+       hold = request floor · release = free it · one speaker at a time
+```
+
+- Capture: `getUserMedia` → `AudioWorklet` resamples to 16 kHz mono Int16,
+  20 ms frames (~32 KB/s while talking, nothing when idle).
+- Transport: binary WebSocket frames tagged with a transmission id; JSON for
+  control (join/roster/grant/deny/end).
+- The server grants the floor to one speaker per channel, relays their audio
+  to everyone else, and force-releases after 5 s of silence (crash safety).
+- Playback: Web Audio with a ~120 ms jitter buffer. Mouth-to-ear latency is
+  typically 200–400 ms — walkie-talkie territory, by design.
+- PCM instead of a codec keeps every moving part dependency-free and works
+  in every modern browser including iOS Safari.
+
+## Privacy & limits
+
+- Audio is **relayed, never stored** — the server holds no recordings, no
+  accounts, no history. TLS protects it in transit when you host with HTTPS.
+- A channel word is a *convenience*, not a secret handshake: anyone who
+  guesses the word can join and listen. Use an odd word or `two-words-2024`
+  style codes for more privacy; the roster always shows who's on.
+- Channels hold up to 16 people (`MAX_ROOM_SIZE` env var to change).
+
+## Phone notes
+
+- **iOS**: use Safari; "Add to Home Screen" works on iOS 16.4+. Keep the
+  screen on while on a channel (the app requests a wake lock where
+  supported).
+- Mic permission is asked once when you join. If you blocked it, the app
+  drops to listen-only and tells you.
+- If the site isn't HTTPS (or localhost), browsers refuse the mic — the app
+  shows a banner instead of failing silently.
+
+## Development
+
+```bash
+npm test           # WebSocket protocol tests (node:test)
+npm run test:e2e   # two headless Chromium pages actually talking to each other
+npm run icons      # regenerate PWA icons (pure-node PNG writer, no deps)
+```
+
+The e2e test uses Chromium's fake-mic mode and asserts real audio frames
+arrive with non-zero energy on the receiving page.

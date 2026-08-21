@@ -1,0 +1,10 @@
+# Render Blueprint for Talkie.
+# One-tap deploy: https://render.com/deploy?repo=https://github.com/imojbaba/talkie2
+services:
+  - type: web
+    name: talkie
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
