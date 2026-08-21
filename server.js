@@ -33,7 +33,7 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const SERVER_VER = 13;
+const SERVER_VER = 14;
 const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE) || 16;
 const SPEAKER_TIMEOUT_MS = Number(process.env.SPEAKER_TIMEOUT_MS) || 5000;
 // Trip memory: a channel survives everyone dropping (chai stop, dead zone),
@@ -92,6 +92,7 @@ function pushRoom(room, kind, minMs, title, body, exceptId) {
   const now = Date.now();
   for (const [id, sub] of room.pushSubs) {
     if (id === exceptId) continue;
+    if (room.pushMuted.has(id)) continue; // 🔇 do-not-disturb
     let live = null;
     for (const c of room.clients) {
       if (c.id === id) {
@@ -282,6 +283,7 @@ function onControl(ws, msg) {
           photoSeq: SEQ_BASE,
           pushSubs: new Map(),
           pushAt: new Map(),
+          pushMuted: new Set(), // members in 🔇 do-not-disturb (no pushes)
         };
         rooms.set(code, room);
       }
@@ -360,8 +362,23 @@ function onControl(ws, msg) {
     case 'leave': {
       // Explicit exit (the Leave button): a real goodbye, not an "away" ghost.
       ws.explicitLeave = true;
-      if (ws.room) ws.room.pushSubs.delete(ws.id); // left the trip: stop buzzing them
+      if (ws.room) {
+        ws.room.pushSubs.delete(ws.id); // left the trip: stop buzzing them
+        ws.room.pushMuted.delete(ws.id);
+      }
       leaveRoom(ws);
+      break;
+    }
+    case 'mute': {
+      // Full do-not-disturb: while set, this member gets no notifications —
+      // keyed by stable id, so it holds even when their app is closed.
+      const room = ws.room;
+      if (!room) return;
+      const now = Date.now();
+      if (now - (ws.lastMuteAt || 0) < 1000) return;
+      ws.lastMuteAt = now;
+      if (msg.on) room.pushMuted.add(ws.id);
+      else room.pushMuted.delete(ws.id);
       break;
     }
     case 'push-test': {

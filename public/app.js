@@ -79,7 +79,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '3.5';
+  const APP_VERSION = '3.6';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -331,7 +331,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=35'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=36'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1169,6 +1169,7 @@
         storage.set('talkie.activeAt', String(Date.now()));
         loadCachedPhotos(); // this phone's trip album appears instantly
         sendPushSub(); // re-register notifications (no-op unless allowed)
+        if (state.muted) wsSend({ t: 'mute', on: true }); // DND re-sync
         armSoundUnlock(); // gesture-less rejoins may need one tap for audio
         setTimeout(maybeOfferPush, 2500);
         break;
@@ -2048,6 +2049,21 @@
     if (!els.banner.hidden && els.banner.textContent.includes('🔔')) banner('');
   };
 
+  // 🔇 is full do-not-disturb: incoming audio, tones/voices AND background
+  // notifications — the server honors the notification half even while the
+  // app is closed, and the choice survives reloads.
+  function applyMute(on) {
+    state.muted = on;
+    storage.set('talkie.muted', on ? '1' : '');
+    els.muteBtn.textContent = on ? '🔇' : '🔊';
+    els.muteBtn.setAttribute('aria-pressed', String(on));
+    els.muteBtn.title = on ? 'Unmute (sounds + notifications)' : 'Mute everything';
+    if (on) {
+      try { speechSynthesis.cancel(); } catch {}
+    }
+    wsSend({ t: 'mute', on });
+  }
+
   // ------------------------------------------------------- install (PWA)
   // Android/Chrome hands us a real install prompt; iPhone has no install
   // API, so the button opens step-by-step instructions instead.
@@ -2126,6 +2142,9 @@
     // Tell the channel we're 🌙 (or back) — info only, audio keeps flowing.
     if (state.joined) wsSend({ t: 'away', on: !visible });
     if (visible) {
+      // Browsers queue (not play) TTS from hidden pages; drop anything stale
+      // so an old "X kuch bol raha hai" can't blurt out on return.
+      try { speechSynthesis.cancel(); } catch {}
       if (state.ctx && state.ctx.state !== 'running') {
         state.ctx.resume().catch(() => {});
       }
@@ -2265,11 +2284,14 @@
       }
     }, 5000);
     els.muteBtn.addEventListener('click', () => {
-      state.muted = !state.muted;
-      els.muteBtn.textContent = state.muted ? '🔇' : '🔊';
-      els.muteBtn.setAttribute('aria-pressed', String(state.muted));
-      toast(state.muted ? 'Speaker muted' : 'Speaker on');
+      applyMute(!state.muted);
+      toast(
+        state.muted
+          ? '🔇 Do not disturb — no sounds, no voices, no notifications'
+          : '🔊 Back on — sounds & notifications resumed'
+      );
     });
+    applyMute(storage.get('talkie.muted') === '1'); // DND survives a reload
     for (const preset of STATUS_PRESETS) {
       const b = document.createElement('button');
       b.type = 'button';

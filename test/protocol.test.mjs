@@ -390,6 +390,41 @@ test('push-test buzzes yourself, rate-limited, needs a subscription', async () =
   a.close();
 });
 
+test('🔇 do-not-disturb stops pushes until unmuted', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'dnd-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'dnd-room', name: 'Bob' });
+  const jb = await b.next((m) => m.t === 'joined');
+  b.j({
+    t: 'push-sub',
+    sub: { endpoint: 'https://push.example/dnd', keys: { p256dh: 'k', auth: 'a' } },
+  });
+  b.j({ t: 'away', on: true }); // backgrounded: pushes would normally flow
+  await a.next((m) => m.t === 'roster' && m.members.some((x) => x.p === 'bg'));
+  b.j({ t: 'mute', on: true });
+  await new Promise((r) => setTimeout(r, 60));
+
+  a.j({ t: 'status', text: 'radio check' });
+  await b.next((m) => m.t === 'status');
+  assert.equal(pushLog.filter((p) => p.id === jb.id).length, 0); // silence
+
+  await new Promise((r) => setTimeout(r, 1100)); // outlive the mute rate limit
+  b.j({ t: 'mute', on: false });
+  await new Promise((r) => setTimeout(r, 60));
+  const photo = Buffer.alloc(4 + 100);
+  photo.writeUInt32LE(0xfffffffe, 0);
+  a.send(photo);
+  await b.next((m) => m.t === 'photo');
+  assert.equal(
+    pushLog.filter((p) => p.id === jb.id && p.payload.tag === 'talkie-photo').length,
+    1
+  );
+  a.close();
+  b.close();
+});
+
 test('photo owner can delete it; others cannot', async () => {
   const MARK = 0xfffffffe;
   const a = await client();
