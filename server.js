@@ -232,10 +232,10 @@ function serveStatic(req, res) {
       return res.end('Not Found');
     }
     const ext = path.extname(filePath).toLowerCase();
-    const fresh = ext === '.html' || filePath.endsWith('sw.js');
+    const longLived = ext === '.png' || ext === '.svg' || ext === '.ico';
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Cache-Control': fresh ? 'no-cache' : 'public, max-age=3600',
+      'Cache-Control': longLived ? 'public, max-age=86400' : 'no-cache',
       'Content-Length': buf.length,
     });
     res.end(req.method === 'HEAD' ? undefined : buf);

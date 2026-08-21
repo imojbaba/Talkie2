@@ -104,15 +104,28 @@ phone A                      server                       phone B
   style codes for more privacy; the roster always shows who's on.
 - Channels hold up to 16 people (`MAX_ROOM_SIZE` env var to change).
 
-## Phone notes
+## Phone notes & troubleshooting
 
-- **iOS**: use Safari; "Add to Home Screen" works on iOS 16.4+. Keep the
-  screen on while on a channel (the app requests a wake lock where
-  supported).
-- Mic permission is asked once when you join. If you blocked it, the app
-  drops to listen-only and tells you.
-- If the site isn't HTTPS (or localhost), browsers refuse the mic — the app
-  shows a banner instead of failing silently.
+- **Mic won't turn on?** You still join in listen-only mode, and the big
+  button becomes **"TAP TO ENABLE MIC"** — tapping it re-asks for
+  permission and shows tailored help if the browser has it hard-blocked.
+- **Opened the link from WhatsApp/Instagram/etc.?** Those in-app browsers
+  often block microphones entirely. Use ⋮ (or the share icon) →
+  **"Open in browser"** — the app detects this case and says so, with a
+  copy-link button.
+- **Too quiet?** Audio deliberately avoids the phone-call earpiece route
+  (no echo-cancellation constraint — PTT is half-duplex so it isn't
+  needed) and plays through the loudspeaker with a volume-boosting
+  limiter. Use the volume keys *while audio is playing* to raise media
+  volume.
+- **Backgrounding**: phones freeze web pages in the background — no web
+  app can keep receiving with the screen off (that's native-app
+  territory). Talkie holds a screen wake lock while you're on a channel
+  (leave it face-up like a real radio) and reconnects instantly when you
+  return.
+- **iOS**: use Safari; "Add to Home Screen" works on iOS 16.4+.
+- If the site isn't HTTPS (or localhost), browsers refuse the mic — the
+  app shows a banner instead of failing silently.
 
 ## Development
 

@@ -68,7 +68,9 @@
     playhead: 0,
     muted: false,
     micOk: false,
-    micTried: false,
+    micBusy: false,
+    micErr: null,
+    srcNode: null,
     retry: 0,
     lastMsgAt: 0,
     lastDenied: null,
@@ -109,9 +111,36 @@
     toastTimer = setTimeout(() => (els.toast.hidden = true), 2600);
   }
 
-  function banner(text) {
-    els.banner.textContent = text || '';
+  function banner(text, btnLabel, onBtn) {
+    els.banner.textContent = '';
     els.banner.hidden = !text;
+    if (!text) return;
+    const span = document.createElement('span');
+    span.textContent = text;
+    els.banner.append(span);
+    if (btnLabel) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'bannerBtn';
+      b.textContent = btnLabel;
+      b.addEventListener('click', onBtn);
+      els.banner.append(b);
+    }
+  }
+
+  // In-app browsers (WhatsApp/Instagram/FB/Telegram web views) often block the mic.
+  const IN_APP = /FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Telegram|Line\/|; wv\)/i.test(
+    navigator.userAgent
+  );
+
+  async function copyPageLink() {
+    const url = location.origin + '/' + (state.code || '');
+    try {
+      await navigator.clipboard.writeText(url);
+      toast('Link copied — paste it in your browser');
+    } catch {
+      toast(url);
+    }
   }
 
   function vibrate(ms) {
@@ -136,8 +165,17 @@
     if (!state.ctx) {
       const AC = window.AudioContext || window.webkitAudioContext;
       state.ctx = new AC();
+      // Makeup gain + limiter so incoming voice is properly loud on phones.
       state.remoteGain = state.ctx.createGain();
-      state.remoteGain.connect(state.ctx.destination);
+      state.remoteGain.gain.value = 1.8;
+      const limiter = state.ctx.createDynamicsCompressor();
+      limiter.threshold.value = -12;
+      limiter.knee.value = 10;
+      limiter.ratio.value = 12;
+      limiter.attack.value = 0.002;
+      limiter.release.value = 0.15;
+      state.remoteGain.connect(limiter);
+      limiter.connect(state.ctx.destination);
       await state.ctx.audioWorklet.addModule('/worklet.js');
     }
     if (state.ctx.state !== 'running') {
@@ -145,20 +183,32 @@
     }
   }
 
-  async function ensureMic() {
-    if (state.stream || state.micTried) return;
-    state.micTried = true;
+  async function attemptMic() {
+    if (state.micOk || state.micBusy) return state.micOk;
+    state.micBusy = true;
+    render();
     try {
+      await ensureContext();
+      if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw Object.assign(new Error('no mediaDevices'), { name: 'NotSupportedError' });
+      }
+      if (state.stream) {
+        for (const t of state.stream.getTracks()) t.stop();
+        state.stream = null;
+      }
+      // No echoCancellation: PTT is half-duplex (you never talk and play at
+      // once), and the AEC constraint makes phones route playback to the
+      // quiet earpiece instead of the loudspeaker.
       state.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
+          echoCancellation: false,
           noiseSuppression: true,
           autoGainControl: true,
           channelCount: 1,
         },
         video: false,
       });
-      const src = state.ctx.createMediaStreamSource(state.stream);
+      state.srcNode = state.ctx.createMediaStreamSource(state.stream);
       state.worklet = new AudioWorkletNode(state.ctx, 'ptt-capture', {
         numberOfInputs: 1,
         numberOfOutputs: 1,
@@ -168,14 +218,52 @@
       // A silent sink keeps the worklet pulled by the render graph.
       const sink = state.ctx.createGain();
       sink.gain.value = 0;
-      src.connect(state.worklet);
+      state.srcNode.connect(state.worklet);
       state.worklet.connect(sink);
       sink.connect(state.ctx.destination);
       state.micOk = true;
+      state.micErr = null;
+      banner('');
+      if (state.joined) toast('Mic ready — hold to talk');
+      return true;
     } catch (err) {
       state.micOk = false;
-      banner('🎙️ Mic blocked — you can listen but not talk. Allow the microphone and reload.');
+      state.micErr = (err && err.name) || 'Error';
+      await showMicHelp();
+      return false;
+    } finally {
+      state.micBusy = false;
+      render();
     }
+  }
+
+  async function showMicHelp() {
+    if (!window.isSecureContext) {
+      banner('⚠️ The mic needs an https:// address — open the secure link.');
+      return;
+    }
+    let perm = '';
+    try {
+      perm = (await navigator.permissions.query({ name: 'microphone' })).state;
+    } catch {}
+    const unsupported = state.micErr === 'NotSupportedError' || state.micErr === 'TypeError';
+    if (unsupported || (IN_APP && perm !== 'granted')) {
+      banner(
+        IN_APP
+          ? '🎙 This chat app’s built-in browser blocks the mic. Open this page in Chrome or Safari (tap ⋮ or the share icon → “Open in browser”).'
+          : '🎙 This browser can’t use the mic — open the link in Chrome or Safari.',
+        'Copy link',
+        copyPageLink
+      );
+      return;
+    }
+    if (perm === 'denied') {
+      banner(
+        '🎙 Mic is blocked for this site. Android: tap the 🔒/⚙ icon by the address bar → Permissions → Microphone → Allow, then reload. iPhone: tap “aA” in the address bar → Website Settings → Microphone → Allow.'
+      );
+      return;
+    }
+    banner('🎙 Tap the big button to turn on your microphone.');
   }
 
   function gate(on) {
@@ -243,7 +331,7 @@
   async function startTalk() {
     if (!state.joined || state.talk !== 'idle') return;
     if (!state.micOk) {
-      toast('Mic is blocked — listen-only');
+      attemptMic();
       return;
     }
     if (state.speaker && state.speaker.id !== state.myId) {
@@ -499,7 +587,7 @@
   setInterval(() => {
     if (state.ws && state.ws.readyState === 1) {
       wsSend({ t: 'ping' });
-      if (Date.now() - state.lastMsgAt > 45000) {
+      if (Date.now() - state.lastMsgAt > 35000) {
         try { state.ws.close(); } catch {}
       }
     }
@@ -560,7 +648,8 @@
     els.ptt.classList.toggle('live', state.talk === 'live');
     els.ptt.classList.toggle('pending', state.talk === 'pending');
     els.ptt.classList.toggle('busy', !!someoneElse);
-    els.ptt.disabled = !state.joined || !state.micOk;
+    els.ptt.disabled = !state.joined;
+    els.ptt.classList.toggle('nomic', state.joined && !state.micOk && !state.micBusy);
     els.stage.classList.toggle('incoming', !!someoneElse);
 
     let status;
@@ -572,6 +661,8 @@
       status = 'Requesting channel…';
     } else if (someoneElse) {
       status = `🎧 ${state.speaker.name} is talking…`;
+    } else if (!state.micOk) {
+      status = state.micBusy ? 'Turning the mic on…' : '🎙 Tap the button to enable your mic';
     } else if (state.members.length < 2) {
       status = 'Channel clear — waiting for your friend';
     } else {
@@ -581,7 +672,15 @@
     els.status.dataset.mode =
       state.talk === 'live' ? 'live' : someoneElse ? 'incoming' : 'idle';
     els.pttLabel.textContent =
-      state.talk === 'live' ? 'ON AIR' : someoneElse ? 'BUSY' : 'HOLD TO TALK';
+      state.talk === 'live'
+        ? 'ON AIR'
+        : someoneElse
+          ? 'BUSY'
+          : !state.micOk
+            ? state.micBusy
+              ? 'MIC…'
+              : 'TAP TO\nENABLE MIC'
+            : 'HOLD TO TALK';
   }
 
   // ------------------------------------------------------------------ inputs
@@ -635,16 +734,9 @@
     els.joinBtn.disabled = true;
     els.joinBtn.textContent = 'Joining…';
     try {
-      if (!navigator.mediaDevices || !window.isSecureContext) {
-        banner('⚠️ Mic needs HTTPS (or localhost). You can listen only.');
-        state.micOk = false;
-        state.micTried = true;
-        if (!state.ctx) await ensureContext().catch(() => {});
-      } else {
-        await ensureContext();
-        await ensureMic();
-      }
+      await ensureContext().catch(() => {});
       connect();
+      attemptMic(); // prompt in parallel; joining shouldn't wait on the mic
     } finally {
       els.joinBtn.disabled = false;
       els.joinBtn.textContent = 'Join channel';
@@ -666,6 +758,17 @@
       try { state.wake.release(); } catch {}
       state.wake = null;
     }
+    if (state.stream) {
+      for (const t of state.stream.getTracks()) t.stop();
+      state.stream = null;
+    }
+    try { state.srcNode && state.srcNode.disconnect(); } catch {}
+    try { state.worklet && state.worklet.disconnect(); } catch {}
+    state.srcNode = null;
+    state.worklet = null;
+    state.micOk = false;
+    state.micErr = null;
+    banner('');
   }
 
   async function share() {
@@ -694,13 +797,37 @@
     } catch {}
   }
 
+  // Phones freeze the page (and drop the socket) in the background; the
+  // moment we're visible again, revive audio and probe/rebuild the connection.
+  function wakeReconnect() {
+    if (!state.joined && !state.joining) return;
+    if (!state.ws) {
+      state.retry = 0;
+      connect();
+    } else if (state.ws.readyState === 1) {
+      const at = Date.now();
+      wsSend({ t: 'ping' });
+      setTimeout(() => {
+        if (state.ws && state.ws.readyState === 1 && state.lastMsgAt < at) {
+          try { state.ws.close(); } catch {}
+        }
+      }, 4000);
+    }
+    // readyState 0/2: connecting or closing — the close handler takes over.
+  }
+
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       if (state.ctx && state.ctx.state !== 'running') {
         state.ctx.resume().catch(() => {});
       }
       keepAwake();
+      wakeReconnect();
     }
+  });
+  window.addEventListener('online', wakeReconnect);
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) wakeReconnect();
   });
 
   // ------------------------------------------------------------------- boot

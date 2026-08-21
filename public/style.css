@@ -126,6 +126,12 @@ body {
   background: rgba(248, 113, 113, 0.12);
   border: 1px solid rgba(248, 113, 113, 0.35);
   border-radius: 12px; font-size: 0.88rem; line-height: 1.45;
+  display: flex; flex-direction: column; gap: 9px; align-items: flex-start;
+}
+.bannerBtn {
+  font-size: 0.85rem; color: var(--text);
+  background: var(--card); border: 1px solid var(--line);
+  padding: 7px 14px; border-radius: 999px; cursor: pointer;
 }
 
 .roster {
@@ -203,6 +209,9 @@ body {
 #ptt.live svg { color: #fecaca; }
 #ptt.busy { opacity: 0.55; }
 #ptt:disabled { opacity: 0.4; cursor: not-allowed; }
+#ptt span { white-space: pre-line; }
+#ptt.nomic { border-color: var(--accent); border-style: dashed; }
+#ptt.nomic svg { color: var(--dim); }
 #ptt.shake { animation: shake 0.3s; }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }

@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 
 const require = createRequire(import.meta.url);
-const { server } = require('../server.js');
+const { server, wss } = require('../server.js');
 const { chromium } = require('playwright-core');
 
 const CANDIDATES = [
@@ -78,8 +78,8 @@ try {
   });
   check('both pages joined, roster shows 2 members', true);
 
-  const aliceMic = await alice.evaluate(() => window.__talkie.micOk);
-  check('fake mic acquired on Alice', aliceMic);
+  await alice.waitForFunction(() => window.__talkie.micOk, null, { timeout: 10000 });
+  check('fake mic acquired on Alice', true);
 
   // Alice holds space to talk
   await alice.keyboard.down('Space');
@@ -138,6 +138,57 @@ try {
   });
   await bob.keyboard.up('Space');
   check('roles swap: Bob talks, Alice receives', true);
+
+  // Auto-reconnect: kill Bob's socket server-side, client must rejoin alone.
+  const bobId = await bob.evaluate(() => window.__talkie.myId);
+  for (const c of wss.clients) if (c.id === bobId) c.terminate();
+  await bob.waitForFunction(
+    (old) => window.__talkie.joined && window.__talkie.myId && window.__talkie.myId !== old,
+    bobId,
+    { timeout: 12000 }
+  );
+  await bob.waitForFunction(() => window.__talkie.members.length === 2, null, {
+    timeout: 10000,
+  });
+  check('auto-reconnect + rejoin after dropped socket', true);
+
+  // Mic denied on first ask -> user stays in listen-only, then the PTT
+  // button itself re-requests the mic and recovers.
+  const ctxC = await browser.newContext();
+  await ctxC.addInitScript(() => {
+    const orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    let first = true;
+    navigator.mediaDevices.getUserMedia = (c) => {
+      if (first) {
+        first = false;
+        return Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
+      }
+      return orig(c);
+    };
+  });
+  const carol = await ctxC.newPage();
+  carol.on('pageerror', (e) => console.log('[Carol pageerror]', e.message));
+  await carol.goto(url, { waitUntil: 'load' });
+  await carol.fill('#name', 'Carol');
+  await carol.fill('#code', 'e2e-mic');
+  await carol.click('#joinBtn');
+  await carol.waitForFunction(
+    () => window.__talkie.joined && window.__talkie.micErr === 'NotAllowedError' && !window.__talkie.micOk,
+    null,
+    { timeout: 10000 }
+  );
+  check('mic denial leaves user joined in listen-only', true);
+  const label = await carol.evaluate(() => document.querySelector('#pttLabel').textContent);
+  check('PTT button invites enabling the mic', /ENABLE MIC/.test(label), label.replace('\n', ' '));
+  await carol.locator('#ptt').dispatchEvent('pointerdown');
+  await carol.locator('#ptt').dispatchEvent('pointerup');
+  await carol.waitForFunction(() => window.__talkie.micOk, null, { timeout: 10000 });
+  check('tapping PTT re-requests and enables the mic', true);
+  await carol.keyboard.down('Space');
+  await carol.waitForFunction(() => window.__talkie.talk === 'live', null, { timeout: 8000 });
+  await carol.keyboard.up('Space');
+  check('recovered mic can transmit', true);
+  await ctxC.close();
 
   // PWA bits reachable
   for (const p of ['/manifest.webmanifest', '/sw.js', '/worklet.js', '/icons/icon-192.png', '/healthz']) {
