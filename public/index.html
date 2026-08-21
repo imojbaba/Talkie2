@@ -14,7 +14,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Talkie">
-  <link rel="stylesheet" href="/style.css?v=25">
+  <link rel="stylesheet" href="/style.css?v=26">
 </head>
 <body data-screen="join">
   <main class="app">
@@ -51,7 +51,7 @@
       </div>
 
       <p class="hint">Tell your friend the word — same word, same channel.<br>Anyone who knows the word can join, so keep it between you.</p>
-      <p class="ver">v2.5</p>
+      <p class="ver">v2.6</p>
     </section>
 
     <section id="channel" class="screen" hidden>
@@ -62,8 +62,7 @@
         </div>
         <div class="hbtns">
           <button id="shareBtn" type="button" class="pill">Invite</button>
-          <button id="recBtn" type="button" class="pill" title="Hold to record the channel roast">🎤</button>
-          <button id="statusBtn" type="button" class="pill" title="Post a status">💬</button>
+          <button id="statusBtn" type="button" class="pill" title="Trip tools">💬 Tools</button>
           <button id="limitBtn" type="button" class="pill" title="Speed limit for alerts">🚦60</button>
           <button id="muteBtn" type="button" class="pill" aria-pressed="false" title="Mute incoming">🔊</button>
           <button id="leaveBtn" type="button" class="pill danger">Leave</button>
@@ -101,7 +100,7 @@
       <div id="speedLine" class="speedLine"></div>
       <div class="meterWrap" aria-hidden="true"><div id="meter"></div></div>
       <p class="kbHint">Tip: hold <kbd>Space</kbd> to talk</p>
-      <p class="ver">v2.5</p>
+      <p class="ver">v2.6</p>
     </section>
 
   </main>
@@ -112,15 +111,18 @@
         <button id="pingBtn" type="button" class="pill">🔔 Ping everyone</button>
         <button id="mapBtn" type="button" class="pill">📍 Location: off</button>
         <button id="photoBtn" type="button" class="pill">📸 Photo</button>
+        <button id="recBtn" type="button" class="pill" title="Hold to record the channel roast">🎤 Hold to record roast</button>
       </div>
       <input id="photoInput" type="file" accept="image/*" hidden>
+      <p class="sLabel">My status</p>
       <div id="statusChips" class="chips"></div>
       <div class="srow">
         <input id="statusInput" maxlength="48" placeholder="Custom… e.g. craving chai" enterkeyhint="send">
         <button id="statusSend" type="button" class="pill">Post</button>
       </div>
+      <p class="sLabel">Quick poll</p>
       <div class="srow">
-        <input id="pollQ" maxlength="40" placeholder="Quick poll… e.g. chai ya khana?">
+        <input id="pollQ" maxlength="40" placeholder="Question… e.g. chai ya khana?">
       </div>
       <div class="srow">
         <input id="pollA" maxlength="16" placeholder="Option A (Yes)">
@@ -135,6 +137,6 @@
   </div>
   <div id="photoView" class="sheet" hidden><img id="photoImg" alt="Shared photo"></div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=25"></script>
+  <script src="/app.js?v=26"></script>
 </body>
 </html>

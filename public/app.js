@@ -68,7 +68,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.5';
+  const APP_VERSION = '2.6';
   const PHOTO_MARK = 0xfffffffe;
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
@@ -127,6 +127,7 @@
     lastLocSent: 0,
     poll: null, // {q, a, b, by, counts, myVote}
     photos: new Map(), // photo id -> object URL
+    pendingPhoto: null, // my just-uploaded JPEG blob, adopted on server ack
     held: false, // another app owns the phone's audio (call/camera/background)
     hold: { mic: false, ctx: false, hidden: false },
     wake: null,
@@ -238,7 +239,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=25'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=26'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -1279,6 +1280,15 @@
               state.photos.delete(id);
             }
           }
+          if (msg.by && msg.by.id === state.myId && state.pendingPhoto) {
+            // The server doesn't echo the binary to the uploader; adopt ours.
+            const newId = msg.ids.find((id) => !state.photos.has(id));
+            if (newId != null) {
+              state.photos.set(newId, URL.createObjectURL(state.pendingPhoto));
+            }
+            state.pendingPhoto = null;
+            toast('📸 Photo shared with the channel');
+          }
           renderPhotos();
         }
         if (msg.by && msg.by.id !== state.myId) toast(`📸 ${msg.by.name} shared a photo`);
@@ -1635,8 +1645,9 @@
       new DataView(out).setUint32(0, PHOTO_MARK, true);
       new Uint8Array(out, 4).set(bytes);
       if (state.ws && state.ws.readyState === 1) {
+        state.pendingPhoto = blob;
         state.ws.send(out);
-        toast('📸 Photo sent to the channel');
+        toast('📸 Sending photo…');
       }
     } catch {
       toast('Could not read that photo — try another one');
