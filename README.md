@@ -25,8 +25,8 @@ to your home screen.
   screen wake-lock while on a channel.
 - **Speed roast 🚦** — optional: share location, set a limit with the 🚦
   button (40/60/80/100/120/off), and whoever rides past it triggers a
-  spoken *"bc bc dheere chala!"* (Hindi TTS) plus horn beeps on
-  everyone's phone. Privacy: speed is computed on-device — GPS
+  spoken *"bhencho bhencho, dheere chala!"* (Hindi TTS) plus horn beeps
+  on everyone's phone. Privacy: speed is computed on-device — GPS
   coordinates never leave the phone, only "name + km/h" when someone
   crosses the limit, at most once per 15 s.
 - **Resilient** — auto-reconnect with backoff, dead-connection watchdog,

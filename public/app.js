@@ -322,10 +322,10 @@
       if (hi) {
         u.voice = hi;
         u.lang = hi.lang;
-        u.text = 'बी सी बी सी! धीरे चला यार!';
+        u.text = 'भेंचो भेंचो! धीरे चला!';
       } else {
         u.lang = 'hi-IN';
-        u.text = 'b c b c! dheere chala yaar!';
+        u.text = 'bhencho bhencho! dheere chala!';
       }
       u.rate = 1.05;
       u.volume = 1;
@@ -336,7 +336,7 @@
 
   function gaali(name, kmh) {
     state.lastGaali = { name, kmh, at: Date.now() };
-    toast(`🚨 ${name}: ${kmh} km/h — bc bc dheere chala!`);
+    toast(`🚨 ${name}: ${kmh} km/h — bhencho bhencho dheere chala!`);
     if (state.muted) return;
     if (state.ctx) {
       const t = state.ctx.currentTime;
