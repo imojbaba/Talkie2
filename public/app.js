@@ -45,7 +45,7 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '2.0';
+  const APP_VERSION = '2.1';
   const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
@@ -206,7 +206,7 @@
       });
       // iOS WebKit can leave these promises pending; never hang on them.
       await Promise.race([
-        state.ctx.audioWorklet.addModule('/worklet.js?v=20'),
+        state.ctx.audioWorklet.addModule('/worklet.js?v=21'),
         new Promise((r) => setTimeout(r, 4000)),
       ]);
     }
@@ -765,6 +765,44 @@
     return `${proto}://${location.host}/ws`;
   }
 
+  // When the socket won't connect, ask plain HTTP whether the server is
+  // even up - that separates "free host waking from its nap" from "this
+  // phone/network is blocking WebSockets".
+  let probeBusy = false;
+  async function probeServer() {
+    if (probeBusy || state.joined) return;
+    probeBusy = true;
+    let msg;
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 8000);
+      const r = await fetch('/healthz?_=' + Date.now(), {
+        cache: 'no-store',
+        signal: ctl.signal,
+      });
+      clearTimeout(timer);
+      const txt = r.ok ? await r.text() : '';
+      if (r.ok && /^ok/.test(txt)) {
+        msg =
+          '🔌 The server is awake, but this phone/network is blocking the live connection (WebSocket). Try: turn off iCloud Private Relay or any VPN/content blocker for this site, or switch between Wi-Fi and mobile data.';
+        if (!state.ws) {
+          state.retry = 0; // server reachable: reconnect right now
+          if (state.joined || state.joining) connect();
+        }
+      } else {
+        msg = '😴 Server is waking up (free hosting naps when idle) — keep this open, usually under a minute…';
+      }
+    } catch {
+      msg = '😴 Server is waking up or unreachable — keep this open, retrying…';
+    }
+    probeBusy = false;
+    if (!state.joined && state.joining) {
+      els.joinErr.textContent = msg;
+      els.joinErr.classList.add('info');
+      els.joinErr.hidden = false;
+    }
+  }
+
   function connect() {
     state.joining = true;
     setConn('connecting');
@@ -812,9 +850,10 @@
         setConn('down');
         render();
         if (!state.joined) {
-          els.joinErr.textContent = 'Can\u2019t reach the server \u2014 retrying\u2026';
+          els.joinErr.textContent = 'Can\u2019t reach the server \u2014 checking why\u2026';
           els.joinErr.classList.add('info');
           els.joinErr.hidden = false;
+          probeServer();
         }
         const delay = Math.min(1000 * 2 ** state.retry, 10000) + Math.random() * 400;
         state.retry++;
