@@ -260,18 +260,27 @@ test('roast clip: upload, broadcast, late-joiner delivery', async () => {
   a.send(clip);
 
   const binB = await b.next((m) => m.binary && m.data.readUInt32LE(0) === 0);
-  assert.equal(binB.data.length, clip.length);
+  assert.equal(binB.data.length, clip.length + 4); // server prepends a clip id
+  assert.equal(binB.data.readUInt32LE(4), 1);
   const info = await a.next((m) => m.t === 'clip');
   assert.equal(info.by.name, 'Alice');
+  assert.deepEqual(info.ids, [1]);
   await b.next((m) => m.t === 'clip');
 
   const c = await client();
   c.j({ t: 'join', room: 'clip-room', name: 'Cara' });
   await c.next((m) => m.t === 'joined');
   const roster = await c.next((m) => m.t === 'roster');
-  assert.equal(roster.clip, true);
+  assert.deepEqual(roster.clips, [1]);
   const binC = await c.next((m) => m.binary && m.data.readUInt32LE(0) === 0);
-  assert.equal(binC.data.length, clip.length);
+  assert.equal(binC.data.length, clip.length + 4);
+
+  // a second recording joins the rotation instead of replacing the first
+  b.send(clip);
+  const bin2 = await a.next((m) => m.binary && m.data.readUInt32LE(0) === 0);
+  assert.equal(bin2.data.readUInt32LE(4), 2);
+  const info2 = await b.next((m) => m.t === 'clip');
+  assert.deepEqual(info2.ids, [1, 2]);
 
   a.close();
   b.close();

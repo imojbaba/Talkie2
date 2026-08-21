@@ -45,8 +45,8 @@
     'tornado','ukulele','volcano','waffle','xylophone','yodel','zeppelin',
   ];
 
-  const APP_VERSION = '1.7';
-  const MIN_SERVER_VER = 7;
+  const APP_VERSION = '1.8';
+  const MIN_SERVER_VER = 8;
   const FRAME_MS = 20;
   const JITTER_S = 0.12;
   const PENDING_CAP = 50; // ~1 s of buffered speech while waiting for a grant
@@ -90,8 +90,8 @@
     speeds: {}, // peer id -> {kmh, at}
     lastSpeedSent: 0,
     myClip: null, // my recorded roast (persisted)
-    clip: null, // the channel's active roast clip
-    roomHasClip: false,
+    clips: new Map(), // channel roast clips: id -> Int16Array
+    pendingUpload: null,
     autoUploaded: false,
     recording: false,
     recBuf: [],
@@ -197,7 +197,7 @@
       limiter.release.value = 0.15;
       state.remoteGain.connect(limiter);
       limiter.connect(state.ctx.destination);
-      await state.ctx.audioWorklet.addModule('/worklet.js?v=17');
+      await state.ctx.audioWorklet.addModule('/worklet.js?v=18');
     }
     if (state.ctx.state !== 'running') {
       try { await state.ctx.resume(); } catch {}
@@ -363,8 +363,8 @@
       latin: (n) => `rocket mat bana ${n}!`,
     },
     {
-      hi: (n) => `अबे ${n}, लॉन्च ही कर देगा क्या!`,
-      latin: (n) => `abe ${n}, launch hi kar dega kya!`,
+      hi: (n) => `अबे ${n}, लॉन्च हीऽऽ कर देगा क्याऽऽ!`,
+      latin: (n) => `abe ${n}, launch heee kar dega kyaa!`,
     },
     {
       hi: (n) => `अबे ${n}, हवा में उड़ेगा क्या!`,
@@ -378,9 +378,8 @@
   }
 
   // Play the channel's recorded roast; returns its duration in seconds.
-  function playClip(vol = 1) {
-    if (!state.ctx || !state.clip) return 0;
-    const pcm = state.clip;
+  function playClip(pcm, vol = 1) {
+    if (!state.ctx || !pcm) return 0;
     const ab = state.ctx.createBuffer(1, pcm.length, 16000);
     const chd = ab.getChannelData(0);
     for (let i = 0; i < pcm.length; i++) chd[i] = pcm[i] / 32768;
@@ -395,7 +394,8 @@
 
   function gaali(name, kmh, v) {
     const n = cleanName(name);
-    const pool = ROASTS.length + (state.clip ? 1 : 0);
+    const clipIds = [...state.clips.keys()].sort((x, y) => x - y);
+    const pool = ROASTS.length + clipIds.length;
     const pick = (v >>> 0) % pool;
     const line = pick < ROASTS.length ? ROASTS[pick] : null;
     state.lastGaali = { name, kmh, v: pick, at: Date.now() };
@@ -412,9 +412,10 @@
     if (line) {
       setTimeout(() => speakHi(line.hi(n), line.latin(n)), 350);
     } else {
-      // The recorded voice says the line; TTS only calls out the culprit.
+      // A recorded voice says the line; TTS only calls out the culprit.
+      const pcm = state.clips.get(clipIds[pick - ROASTS.length]);
       setTimeout(() => {
-        const dur = playClip();
+        const dur = playClip(pcm);
         setTimeout(() => speakName(name), dur * 1000 + 150);
       }, 350);
     }
@@ -487,12 +488,11 @@
       o += f.length;
     }
     state.myClip = pcm;
-    state.clip = pcm;
-    state.roomHasClip = true;
+    state.pendingUpload = pcm;
     saveClip(pcm);
     uploadClip(pcm);
-    playClip(0.6); // quick local preview
-    toast('Roast saved — the channel now roasts in your voice');
+    playClip(pcm, 0.6); // quick local preview
+    toast('Roast added — up to 4 recordings rotate; a 5th replaces the oldest');
   }
 
   function distM(a, b) {
@@ -666,10 +666,10 @@
     const dv = new DataView(buf);
     const tx = dv.getUint32(0, true);
     if (tx === 0) {
-      // txId 0 carries the channel's recorded roast clip.
-      if (buf.byteLength > 8) {
-        state.clip = new Int16Array(buf.slice(4));
-        state.roomHasClip = true;
+      // [0][clipId][pcm]: one of the channel's recorded roast clips.
+      if (buf.byteLength > 12) {
+        const id = dv.getUint32(4, true);
+        state.clips.set(id, new Int16Array(buf.slice(8)));
       }
       return;
     }
@@ -785,13 +785,14 @@
           state.limitKmh = msg.limit;
           renderLimit();
         }
-        if ('clip' in msg) {
-          state.roomHasClip = !!msg.clip;
-          // Fresh channel + I have a saved roast -> it becomes the channel's.
-          if (!msg.clip && state.myClip && !state.autoUploaded) {
+        if (Array.isArray(msg.clips)) {
+          for (const id of [...state.clips.keys()]) {
+            if (!msg.clips.includes(id)) state.clips.delete(id);
+          }
+          // Fresh channel + I have a saved roast -> it joins the rotation.
+          if (msg.clips.length === 0 && state.myClip && !state.autoUploaded) {
             state.autoUploaded = true;
-            state.clip = state.myClip;
-            state.roomHasClip = true;
+            state.pendingUpload = state.myClip;
             uploadClip(state.myClip);
           }
         }
@@ -902,9 +903,20 @@
         break;
       }
       case 'clip': {
-        state.roomHasClip = true;
+        if (Array.isArray(msg.ids)) {
+          for (const id of [...state.clips.keys()]) {
+            if (!msg.ids.includes(id)) state.clips.delete(id);
+          }
+          if (msg.by && msg.by.id === state.myId && state.pendingUpload) {
+            // The server doesn't echo binary to the uploader; adopt our copy.
+            const newId = msg.ids.find((id) => !state.clips.has(id));
+            if (newId != null) state.clips.set(newId, state.pendingUpload);
+            state.pendingUpload = null;
+          }
+        }
         if (msg.by && msg.by.id !== state.myId) {
-          toast(`🎤 ${msg.by.name} recorded the channel roast`);
+          const n = msg.ids ? msg.ids.length : 1;
+          toast(`🎤 ${msg.by.name} added a roast voice (${n} rotating)`);
         }
         break;
       }
@@ -1129,8 +1141,8 @@
     banner('');
     stopGeo();
     stopRecording();
-    state.clip = state.myClip;
-    state.roomHasClip = false;
+    state.clips = new Map();
+    state.pendingUpload = null;
     state.autoUploaded = false;
     state.speeds = {};
   }

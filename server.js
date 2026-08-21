@@ -30,7 +30,7 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const SERVER_VER = 7;
+const SERVER_VER = 8;
 const MAX_ROOM_SIZE = Number(process.env.MAX_ROOM_SIZE) || 16;
 const SPEAKER_TIMEOUT_MS = Number(process.env.SPEAKER_TIMEOUT_MS) || 5000;
 const MAX_BINARY_BYTES = 8 * 1024;
@@ -89,7 +89,7 @@ function rosterOf(room) {
       ? { id: room.speaker.id, name: room.speaker.name, tx: room.tx }
       : null,
     limit: room.limitKmh,
-    clip: !!room.clip,
+    clips: room.clips.map((c) => c.id),
   };
 }
 
@@ -144,6 +144,8 @@ function onControl(ws, msg) {
           lastAudio: 0,
           limitKmh: 60,
           roastSeq: 0,
+          clips: [],
+          clipSeq: 0,
         };
         rooms.set(code, room);
       }
@@ -160,8 +162,8 @@ function onControl(ws, msg) {
       send(ws, { t: 'joined', id: ws.id, room: code, ver: SERVER_VER });
       broadcast(room, { t: 'peer-join', id: ws.id, name: ws.name }, ws);
       broadcast(room, rosterOf(room), null);
-      if (room.clip && ws.readyState === ws.OPEN) {
-        ws.send(room.clip, { binary: true });
+      for (const c of room.clips) {
+        if (ws.readyState === ws.OPEN) ws.send(c.buf, { binary: true });
       }
       break;
     }
@@ -249,13 +251,23 @@ function onAudio(ws, data) {
     const now = Date.now();
     if (now - (ws.lastClipAt || 0) < 10000) return;
     ws.lastClipAt = now;
-    room.clip = Buffer.from(data);
+    const id = ++room.clipSeq;
+    const buf = Buffer.alloc(data.length + 4);
+    buf.writeUInt32LE(0, 0);
+    buf.writeUInt32LE(id, 4);
+    data.copy(buf, 8, 4); // pcm payload after the [0][clipId] header
+    room.clips.push({ id, buf });
+    if (room.clips.length > 4) room.clips.shift(); // newest four rotate
     for (const c of room.clients) {
       if (c !== ws && c.readyState === c.OPEN && c.bufferedAmount < 2_000_000) {
-        c.send(room.clip, { binary: true });
+        c.send(buf, { binary: true });
       }
     }
-    broadcast(room, { t: 'clip', by: { id: ws.id, name: ws.name } }, null);
+    broadcast(
+      room,
+      { t: 'clip', by: { id: ws.id, name: ws.name }, ids: room.clips.map((c) => c.id) },
+      null
+    );
     return;
   }
   if (room.speaker !== ws) return;

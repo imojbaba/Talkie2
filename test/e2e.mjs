@@ -149,7 +149,7 @@ try {
     { timeout: 8000 }
   );
   await bob.waitForFunction(
-    () => window.__talkie.clip && window.__talkie.clip.length > 5000,
+    () => window.__talkie.clips && window.__talkie.clips.size > 0,
     null,
     { timeout: 8000 }
   );

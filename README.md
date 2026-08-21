@@ -26,10 +26,10 @@ to your home screen.
 - **Speed roast 🚦** — optional: share location and whoever rides past
   the channel's speed limit triggers *"bhencho bhencho {name}! dheere
   chala!"* plus horn beeps on **everyone's** phone. Hold the 🎤 pill to
-  record the line in your own voice — your clip becomes the channel's
-  roast on every phone (synced to late joiners too) and TTS only calls
-  out the culprit's name at the end; without a recording, Hindi TTS
-  speaks the whole line. The 🚦 button cycles the limit
+  record the line in your own voice — up to **four recordings rotate**
+  as extra voices (anyone on the channel can add one; a fifth replaces
+  the oldest), synced to late joiners, with TTS calling out the
+  culprit's name at the end of a recorded clip. The 🚦 button cycles the limit
   (20/30/40/60/80/100/120/off) and it's **channel-wide**: anyone's
   change syncs to all, new joiners inherit it, and the server enforces
   it. Everyone's live speed shows next to their name in the roster
