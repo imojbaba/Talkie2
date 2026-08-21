@@ -1023,10 +1023,12 @@
         .register('/sw.js')
         .then((reg) => reg.update().catch(() => {}))
         .catch(() => {});
-      // When a new version takes over, refresh once — but never mid-session.
+      // When a new version replaces the old one, refresh once — but never
+      // mid-session, and not on the first install (that's not an update).
       let reloaded = false;
+      const wasControlled = !!navigator.serviceWorker.controller;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (reloaded || state.joined || state.joining) return;
+        if (!wasControlled || reloaded || state.joined || state.joining) return;
         reloaded = true;
         location.reload();
       });
