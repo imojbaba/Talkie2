@@ -24,13 +24,17 @@ to your home screen.
 - **PWA** — installable on iOS/Android home screens, offline app shell,
   screen wake-lock while on a channel.
 - **Speed roast 🚦** — optional: share location and whoever rides past
-  the channel's speed limit triggers a spoken *"bhencho bhencho
-  {name}! dheere chala!"* (Hindi TTS) plus horn beeps on **everyone's**
-  phone. The 🚦 button cycles the limit (40/60/80/100/120/off) and it's
-  **channel-wide**: anyone's change syncs to all, new joiners inherit
-  it, and the server enforces it. Privacy: speed is computed on-device —
-  GPS coordinates never leave the phone, only "name + km/h" when
-  someone crosses the limit, at most once per 15 s.
+  the channel's speed limit triggers *"bhencho bhencho {name}! dheere
+  chala!"* plus horn beeps on **everyone's** phone. Hold the 🎤 pill to
+  record the line in your own voice — your clip becomes the channel's
+  roast on every phone (synced to late joiners too) and TTS only calls
+  out the culprit's name at the end; without a recording, Hindi TTS
+  speaks the whole line. The 🚦 button cycles the limit
+  (20/30/40/60/80/100/120/off) and it's **channel-wide**: anyone's
+  change syncs to all, new joiners inherit it, and the server enforces
+  it. Everyone's live speed shows next to their name in the roster
+  (red when over the limit). Privacy: GPS coordinates never leave the
+  phone — only the km/h number is shared with your channel.
 - **Resilient** — auto-reconnect with backoff, dead-connection watchdog,
   stuck-speaker timeout, per-client rate limiting.
 - **Zero frontend dependencies, one backend dependency** (`ws`).

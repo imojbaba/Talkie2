@@ -12,6 +12,7 @@
     chWord: $('#chWord'),
     connDot: $('#connDot'),
     shareBtn: $('#shareBtn'),
+    recBtn: $('#recBtn'),
     limitBtn: $('#limitBtn'),
     muteBtn: $('#muteBtn'),
     leaveBtn: $('#leaveBtn'),
@@ -84,6 +85,14 @@
     speedKmh: null,
     lastAlertAt: 0,
     lastGaali: null,
+    speeds: {}, // peer id -> {kmh, at}
+    lastSpeedSent: 0,
+    myClip: null, // my recorded roast (persisted)
+    clip: null, // the channel's active roast clip
+    roomHasClip: false,
+    autoUploaded: false,
+    recording: false,
+    recBuf: [],
     wake: null,
     stats: { framesTx: 0, framesRx: 0, rxEnergy: 0 },
   };
@@ -314,21 +323,24 @@
   }
 
   // ------------------------------------------------- speed watch ("dheere chala")
-  const LIMIT_STEPS = [40, 60, 80, 100, 120, 0]; // 0 = off
+  const LIMIT_STEPS = [20, 30, 40, 60, 80, 100, 120, 0]; // 0 = off
 
-  function speakGaali(name) {
+  function cleanName(name) {
+    // Letters/digits only, so TTS never narrates emojis or symbols.
+    return (name || '').replace(/[^\p{L}\p{N} ]/gu, '').trim() || 'bhai';
+  }
+
+  function speakHi(hiText, latinText) {
     try {
-      // Letters/digits only, so TTS never narrates emojis or symbols.
-      const spoken = (name || '').replace(/[^\p{L}\p{N} ]/gu, '').trim() || 'bhai';
       const u = new SpeechSynthesisUtterance();
       const hi = speechSynthesis.getVoices().find((v) => /^hi\b|^hi-/i.test(v.lang));
       if (hi) {
         u.voice = hi;
         u.lang = hi.lang;
-        u.text = `भेंचो भेंचो ${spoken}! धीरे चला!`;
+        u.text = hiText;
       } else {
         u.lang = 'hi-IN';
-        u.text = `bhencho bhencho ${spoken}! dheere chala!`;
+        u.text = latinText;
       }
       u.rate = 1.05;
       u.volume = 1;
@@ -337,9 +349,57 @@
     } catch {}
   }
 
-  function gaali(name, kmh) {
-    state.lastGaali = { name, kmh, at: Date.now() };
-    toast(`🚨 ${name}: ${kmh} km/h — bhencho bhencho dheere chala!`);
+  // Rotating roast lines; the server's v counter keeps every phone on the
+  // same line for a given violation. A recorded 🎤 clip joins as one more.
+  const ROASTS = [
+    {
+      hi: (n) => `भेंचो भेंचो ${n}! धीरे चला!`,
+      latin: (n) => `bhencho bhencho ${n}! dheere chala!`,
+    },
+    {
+      hi: (n) => `रॉकेट मत बना ${n}!`,
+      latin: (n) => `rocket mat bana ${n}!`,
+    },
+    {
+      hi: (n) => `अबे ${n}, लॉन्च ही कर देगा क्या!`,
+      latin: (n) => `abe ${n}, launch hi kar dega kya!`,
+    },
+    {
+      hi: (n) => `अबे ${n}, हवा में उड़ेगा क्या!`,
+      latin: (n) => `abe ${n}, hawa mein udega kya!`,
+    },
+  ];
+
+  function speakName(name) {
+    const n = cleanName(name);
+    speakHi(`${n}!`, `${n}!`);
+  }
+
+  // Play the channel's recorded roast; returns its duration in seconds.
+  function playClip(vol = 1) {
+    if (!state.ctx || !state.clip) return 0;
+    const pcm = state.clip;
+    const ab = state.ctx.createBuffer(1, pcm.length, 16000);
+    const chd = ab.getChannelData(0);
+    for (let i = 0; i < pcm.length; i++) chd[i] = pcm[i] / 32768;
+    const src = state.ctx.createBufferSource();
+    src.buffer = ab;
+    const g = state.ctx.createGain();
+    g.gain.value = vol;
+    src.connect(g).connect(state.remoteGain);
+    src.start();
+    return ab.duration;
+  }
+
+  function gaali(name, kmh, v) {
+    const n = cleanName(name);
+    const pool = ROASTS.length + (state.clip ? 1 : 0);
+    const pick = (v >>> 0) % pool;
+    const line = pick < ROASTS.length ? ROASTS[pick] : null;
+    state.lastGaali = { name, kmh, v: pick, at: Date.now() };
+    toast(
+      `🚨 ${name}: ${kmh} km/h — ${line ? line.latin(n) : 'bhencho bhencho dheere chala!'}`
+    );
     if (state.muted) return;
     if (state.ctx) {
       const t = state.ctx.currentTime;
@@ -347,7 +407,90 @@
       tone(392, 0.12, t + 0.16, { type: 'square', vol: 0.09 });
     }
     vibrate([90, 60, 90]);
-    setTimeout(() => speakGaali(name), 350);
+    if (line) {
+      setTimeout(() => speakHi(line.hi(n), line.latin(n)), 350);
+    } else {
+      // The recorded voice says the line; TTS only calls out the culprit.
+      setTimeout(() => {
+        const dur = playClip();
+        setTimeout(() => speakName(name), dur * 1000 + 150);
+      }, 350);
+    }
+  }
+
+  // ------------------------------------------------- roast recording (🎤)
+  function saveClip(pcm) {
+    try {
+      const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength);
+      let s = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      localStorage.setItem('talkie.clip', btoa(s));
+    } catch {}
+  }
+
+  function loadClip() {
+    try {
+      const b64 = localStorage.getItem('talkie.clip');
+      if (!b64) return null;
+      const s = atob(b64);
+      const bytes = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+      return new Int16Array(bytes.buffer);
+    } catch {
+      return null;
+    }
+  }
+
+  function uploadClip(pcm) {
+    if (!state.ws || state.ws.readyState !== 1) return;
+    const buf = new ArrayBuffer(4 + pcm.byteLength);
+    new DataView(buf).setUint32(0, 0, true); // txId 0 marks a clip upload
+    new Int16Array(buf, 4).set(pcm);
+    state.ws.send(buf);
+  }
+
+  async function startRecording() {
+    if (!state.joined || state.recording || state.talk !== 'idle') return;
+    if (!state.micOk) {
+      attemptMic();
+      return;
+    }
+    await ensureContext();
+    state.recording = true;
+    state.recBuf = [];
+    els.recBtn.classList.add('rec');
+    toast('🎤 Recording roast… release to save (max 5 s)');
+    gate(true);
+  }
+
+  function stopRecording() {
+    if (!state.recording) return;
+    state.recording = false;
+    gate(false);
+    setMeter(0);
+    els.recBtn.classList.remove('rec');
+    const frames = state.recBuf;
+    state.recBuf = [];
+    const total = frames.reduce((n, f) => n + f.length, 0);
+    if (total < 16000 * 0.4) {
+      toast('Too short — hold 🎤 and say the line');
+      return;
+    }
+    const pcm = new Int16Array(total);
+    let o = 0;
+    for (const f of frames) {
+      pcm.set(f, o);
+      o += f.length;
+    }
+    state.myClip = pcm;
+    state.clip = pcm;
+    state.roomHasClip = true;
+    saveClip(pcm);
+    uploadClip(pcm);
+    playClip(0.6); // quick local preview
+    toast('Roast saved — the channel now roasts in your voice');
   }
 
   function distM(a, b) {
@@ -377,6 +520,11 @@
     state.lastFix = { lat: c.latitude, lon: c.longitude, t: pos.timestamp };
     if (kmh == null || kmh > 250) return renderSpeed(null);
     renderSpeed(kmh);
+    const now = Date.now();
+    if (state.joined && now - state.lastSpeedSent >= 3000) {
+      state.lastSpeedSent = now;
+      wsSend({ t: 'speed', kmh: Math.round(kmh) });
+    }
     if (
       state.joined &&
       state.limitKmh &&
@@ -447,6 +595,12 @@
   }
 
   function onFrame(pcm) {
+    if (state.recording) {
+      state.recBuf.push(pcm);
+      setMeter(rms(pcm));
+      if (state.recBuf.length >= 250) stopRecording(); // 5 s cap
+      return;
+    }
     if (state.talk === 'pending') {
       state.pending.push(pcm);
       if (state.pending.length > PENDING_CAP) state.pending.shift();
@@ -509,6 +663,14 @@
     if (buf.byteLength < 6) return;
     const dv = new DataView(buf);
     const tx = dv.getUint32(0, true);
+    if (tx === 0) {
+      // txId 0 carries the channel's recorded roast clip.
+      if (buf.byteLength > 8) {
+        state.clip = new Int16Array(buf.slice(4));
+        state.roomHasClip = true;
+      }
+      return;
+    }
     if (!state.speaker || tx !== state.rxTx) return;
     state.stats.framesRx++;
     if (!state.ctx) return;
@@ -604,6 +766,8 @@
         state.joined = true;
         state.joining = false;
         state.retry = 0;
+        state.autoUploaded = false;
+        state.speeds = {};
         setConn('up');
         showChannel();
         keepAwake();
@@ -615,6 +779,16 @@
         if (typeof msg.limit === 'number' && msg.limit !== state.limitKmh) {
           state.limitKmh = msg.limit;
           renderLimit();
+        }
+        if ('clip' in msg) {
+          state.roomHasClip = !!msg.clip;
+          // Fresh channel + I have a saved roast -> it becomes the channel's.
+          if (!msg.clip && state.myClip && !state.autoUploaded) {
+            state.autoUploaded = true;
+            state.clip = state.myClip;
+            state.roomHasClip = true;
+            uploadClip(state.myClip);
+          }
         }
         const sp = msg.speaker;
         if (sp && sp.id !== state.myId) {
@@ -715,8 +889,20 @@
         break;
       }
       case 'overspeed':
-        gaali(msg.name, msg.kmh);
+        gaali(msg.name, msg.kmh, msg.v);
         break;
+      case 'speed': {
+        state.speeds[msg.id] = { kmh: msg.kmh, at: Date.now() };
+        render();
+        break;
+      }
+      case 'clip': {
+        state.roomHasClip = true;
+        if (msg.by && msg.by.id !== state.myId) {
+          toast(`🎤 ${msg.by.name} recorded the channel roast`);
+        }
+        break;
+      }
       case 'limit': {
         state.limitKmh = msg.kmh;
         renderLimit();
@@ -782,6 +968,20 @@
       nm.className = 'mname';
       nm.textContent = m.name + (m.id === state.myId ? ' (you)' : '');
       li.append(av, nm);
+      let kmh = null;
+      if (m.id === state.myId) {
+        if (state.speedKmh != null && state.speedKmh > 2) kmh = Math.round(state.speedKmh);
+      } else {
+        const s = state.speeds[m.id];
+        if (s && Date.now() - s.at < 12000 && s.kmh > 2) kmh = s.kmh;
+      }
+      if (kmh != null) {
+        const sp = document.createElement('span');
+        sp.className = 'mspeed' + (state.limitKmh && kmh > state.limitKmh ? ' over' : '');
+        sp.textContent = `${kmh}`;
+        sp.title = `${kmh} km/h`;
+        li.append(sp);
+      }
       if (speaking) {
         const dot = document.createElement('span');
         dot.className = 'talkdot';
@@ -923,6 +1123,11 @@
     state.micErr = null;
     banner('');
     stopGeo();
+    stopRecording();
+    state.clip = state.myClip;
+    state.roomHasClip = false;
+    state.autoUploaded = false;
+    state.speeds = {};
   }
 
   async function share() {
@@ -1010,6 +1215,25 @@
     renderLimit(); // channel-wide limit arrives from the server after joining
     els.limitBtn.addEventListener('click', cycleLimit);
     try { speechSynthesis.getVoices(); } catch {} // warm the voice list
+    state.myClip = loadClip();
+    state.clip = state.myClip;
+    const rb = els.recBtn;
+    rb.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      try { rb.setPointerCapture(e.pointerId); } catch {}
+      startRecording();
+    });
+    const recUp = (e) => {
+      e.preventDefault();
+      stopRecording();
+    };
+    rb.addEventListener('pointerup', recUp);
+    rb.addEventListener('pointercancel', recUp);
+    rb.addEventListener('contextmenu', (e) => e.preventDefault());
+    // keep roster speeds fresh (stale entries fade out)
+    setInterval(() => {
+      if (state.joined) render();
+    }, 5000);
     els.muteBtn.addEventListener('click', () => {
       state.muted = !state.muted;
       els.muteBtn.textContent = state.muted ? '🔇' : '🔊';

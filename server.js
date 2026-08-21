@@ -38,6 +38,8 @@ const MAX_TEXT_BYTES = 2 * 1024;
 // flush the frames it buffered while waiting for the floor grant.
 const AUDIO_BYTES_PER_SEC = 96 * 1024;
 const AUDIO_BURST_BYTES = 256 * 1024;
+// Recorded roast clip: up to ~5 s of 16 kHz 16-bit PCM plus its 4-byte header.
+const CLIP_MAX_BYTES = 320 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -86,6 +88,7 @@ function rosterOf(room) {
       ? { id: room.speaker.id, name: room.speaker.name, tx: room.tx }
       : null,
     limit: room.limitKmh,
+    clip: !!room.clip,
   };
 }
 
@@ -139,6 +142,7 @@ function onControl(ws, msg) {
           tx: 0,
           lastAudio: 0,
           limitKmh: 60,
+          roastSeq: 0,
         };
         rooms.set(code, room);
       }
@@ -155,6 +159,9 @@ function onControl(ws, msg) {
       send(ws, { t: 'joined', id: ws.id, room: code });
       broadcast(room, { t: 'peer-join', id: ws.id, name: ws.name }, ws);
       broadcast(room, rosterOf(room), null);
+      if (room.clip && ws.readyState === ws.OPEN) {
+        ws.send(room.clip, { binary: true });
+      }
       break;
     }
     case 'ptt-start': {
@@ -193,6 +200,18 @@ function onControl(ws, msg) {
       broadcast(room, { t: 'limit', kmh, by: { id: ws.id, name: ws.name } }, null);
       break;
     }
+    case 'speed': {
+      // Live speed sharing for the roster: a number only, never coordinates.
+      const room = ws.room;
+      if (!room) return;
+      const kmh = Math.round(Number(msg.kmh));
+      if (!(kmh >= 0 && kmh < 300)) return;
+      const now = Date.now();
+      if (now - (ws.lastSpeedAt || 0) < 2000) return;
+      ws.lastSpeedAt = now;
+      broadcast(room, { t: 'speed', id: ws.id, kmh }, ws);
+      break;
+    }
     case 'overspeed': {
       // Speed-limit roast: client sends only a number, never coordinates.
       const room = ws.room;
@@ -203,7 +222,12 @@ function onControl(ws, msg) {
       const now = Date.now();
       if (now - (ws.lastOverspeed || 0) < 10000) return;
       ws.lastOverspeed = now;
-      broadcast(room, { t: 'overspeed', id: ws.id, name: ws.name, kmh }, null);
+      // v picks the roast line; a shared counter keeps all phones in sync.
+      broadcast(
+        room,
+        { t: 'overspeed', id: ws.id, name: ws.name, kmh, v: room.roastSeq++ },
+        null
+      );
       break;
     }
     case 'ping':
@@ -216,7 +240,24 @@ function onControl(ws, msg) {
 
 function onAudio(ws, data) {
   const room = ws.room;
-  if (!room || room.speaker !== ws) return;
+  if (!room) return;
+  // Binary messages with txId 0 are roast-clip uploads, not live audio; live
+  // transmission ids are always non-zero.
+  if (data.length >= 8 && data.readUInt32LE(0) === 0) {
+    if (data.length > CLIP_MAX_BYTES) return;
+    const now = Date.now();
+    if (now - (ws.lastClipAt || 0) < 10000) return;
+    ws.lastClipAt = now;
+    room.clip = Buffer.from(data);
+    for (const c of room.clients) {
+      if (c !== ws && c.readyState === c.OPEN && c.bufferedAmount < 2_000_000) {
+        c.send(room.clip, { binary: true });
+      }
+    }
+    broadcast(room, { t: 'clip', by: { id: ws.id, name: ws.name } }, null);
+    return;
+  }
+  if (room.speaker !== ws) return;
   if (data.length > MAX_BINARY_BYTES) return;
   const now = Date.now();
   ws.tokens = Math.min(
@@ -277,7 +318,7 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer(serveStatic);
-const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 512 * 1024 });
 
 wss.on('connection', (ws) => {
   ws.id = crypto.randomBytes(3).toString('hex');

@@ -184,6 +184,7 @@ test('overspeed relays to the whole room, rate-limited, validated', async () => 
   const gotB = await b.next((m) => m.t === 'overspeed');
   assert.equal(gotB.name, 'Alice');
   assert.equal(gotB.kmh, 88);
+  assert.equal(gotB.v, 0); // first roast uses variant 0
   const gotA = await a.next((m) => m.t === 'overspeed'); // sender hears it too
   assert.equal(gotA.kmh, 88);
 
@@ -196,6 +197,13 @@ test('overspeed relays to the whole room, rate-limited, validated', async () => 
   b.j({ t: 'overspeed', kmh: -5 });
   b.j({ t: 'overspeed', kmh: 'zoom' });
   await a.expectNone((m) => m.t === 'overspeed');
+
+  // the roast-rotation counter advances only on relayed alerts
+  b.j({ t: 'overspeed', kmh: 92 });
+  const g2 = await a.next((m) => m.t === 'overspeed');
+  assert.equal(g2.kmh, 92);
+  assert.equal(g2.v, 1);
+  await b.next((m) => m.t === 'overspeed');
 
   a.close();
   b.close();
@@ -232,6 +240,60 @@ test('channel-wide limit syncs to everyone and gates overspeed', async () => {
   await a.next((m) => m.t === 'limit' && m.kmh === 0);
   a.j({ t: 'overspeed', kmh: 150 });
   await b.expectNone((m) => m.t === 'overspeed');
+
+  a.close();
+  b.close();
+});
+
+test('roast clip: upload, broadcast, late-joiner delivery', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'clip-room', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'clip-room', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  const clip = Buffer.alloc(4 + 3200); // txId 0 header + 0.1 s of PCM
+  clip.writeUInt32LE(0, 0);
+  for (let i = 0; i < 1600; i++) clip.writeInt16LE(((i % 32) - 16) * 500, 4 + i * 2);
+  a.send(clip);
+
+  const binB = await b.next((m) => m.binary && m.data.readUInt32LE(0) === 0);
+  assert.equal(binB.data.length, clip.length);
+  const info = await a.next((m) => m.t === 'clip');
+  assert.equal(info.by.name, 'Alice');
+  await b.next((m) => m.t === 'clip');
+
+  const c = await client();
+  c.j({ t: 'join', room: 'clip-room', name: 'Cara' });
+  await c.next((m) => m.t === 'joined');
+  const roster = await c.next((m) => m.t === 'roster');
+  assert.equal(roster.clip, true);
+  const binC = await c.next((m) => m.binary && m.data.readUInt32LE(0) === 0);
+  assert.equal(binC.data.length, clip.length);
+
+  a.close();
+  b.close();
+  c.close();
+});
+
+test('live speed relays to peers, rate-limited, no echo', async () => {
+  const a = await client();
+  const b = await client();
+  a.j({ t: 'join', room: 'livespeed', name: 'Alice' });
+  await a.next((m) => m.t === 'joined');
+  b.j({ t: 'join', room: 'livespeed', name: 'Bob' });
+  await b.next((m) => m.t === 'joined');
+
+  a.j({ t: 'speed', kmh: 42 });
+  const sp = await b.next((m) => m.t === 'speed');
+  assert.equal(sp.kmh, 42);
+  await a.expectNone((m) => m.t === 'speed'); // no echo to sender
+
+  a.j({ t: 'speed', kmh: 55 }); // inside the 2 s window -> dropped
+  b.j({ t: 'speed', kmh: 999 }); // junk -> dropped
+  await b.expectNone((m) => m.t === 'speed' && m.kmh === 55);
+  await a.expectNone((m) => m.t === 'speed');
 
   a.close();
   b.close();

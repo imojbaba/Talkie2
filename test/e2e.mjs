@@ -139,6 +139,22 @@ try {
   await bob.keyboard.up('Space');
   check('roles swap: Bob talks, Alice receives', true);
 
+  // Alice holds 🎤 to record the channel roast; Bob must receive the clip.
+  await alice.locator('#recBtn').dispatchEvent('pointerdown');
+  await alice.waitForTimeout(1300);
+  await alice.locator('#recBtn').dispatchEvent('pointerup');
+  await alice.waitForFunction(
+    () => window.__talkie.myClip && window.__talkie.myClip.length > 5000,
+    null,
+    { timeout: 8000 }
+  );
+  await bob.waitForFunction(
+    () => window.__talkie.clip && window.__talkie.clip.length > 5000,
+    null,
+    { timeout: 8000 }
+  );
+  check('recorded roast distributed to the channel', true);
+
   // Auto-reconnect: kill Bob's socket server-side, client must rejoin alone.
   const bobId = await bob.evaluate(() => window.__talkie.myId);
   for (const c of wss.clients) if (c.id === bobId) c.terminate();
@@ -202,11 +218,11 @@ try {
   await dave.fill('#code', 'e2e-speed');
   await dave.click('#joinBtn');
   await dave.waitForFunction(() => window.__talkie.joined, null, { timeout: 15000 });
-  // Cycle the channel-wide limit to 40 via the 🚦 button (server round-trip;
+  // Cycle the channel-wide limit to 30 via the 🚦 button (server round-trip;
   // the server accepts at most one change per second).
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     const cur = await dave.evaluate(() => window.__talkie.limitKmh);
-    if (cur === 40) break;
+    if (cur === 30) break;
     await dave.waitForTimeout(1100);
     await dave.click('#limitBtn');
     await dave.waitForFunction((prev) => window.__talkie.limitKmh !== prev, cur, {
@@ -214,7 +230,7 @@ try {
     });
   }
   const limitLabel = await dave.evaluate(() => document.querySelector('#limitBtn').textContent);
-  check('channel-wide limit set to 40 via 🚦 button', limitLabel === '🚦40', limitLabel);
+  check('channel-wide limit set to 30 via 🚦 button', limitLabel === '🚦30', limitLabel);
   await dave.waitForFunction(() => window.__talkie.lastFix != null, null, { timeout: 10000 });
   // "Drive": step the position ~44 m every 1.2 s (~130 km/h) until the roast fires.
   let lat = 12.9716;
